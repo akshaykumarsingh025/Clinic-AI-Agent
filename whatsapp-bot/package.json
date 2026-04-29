@@ -1,0 +1,17 @@
+{
+  "name": "clinic-whatsapp-bot",
+  "version": "1.0.0",
+  "description": "WhatsApp bot for clinic appointment booking via Baileys",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.8",
+    "axios": "^1.7.0",
+    "form-data": "^4.0.0",
+    "express": "^4.21.0",
+    "pino": "^9.0.0",
+    "qrcode-terminal": "^0.12.0"
+  }
+}

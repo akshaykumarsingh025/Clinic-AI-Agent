@@ -1,0 +1,8 @@
+auth_info/
+node_modules/
+__pycache__/
+*.pyc
+database/clinic.db
+audio_cache/incoming/
+.env
+logs/*.log
