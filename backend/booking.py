@@ -91,15 +91,18 @@ def find_next_available_date(from_date: str, preference: Optional[str] = None) -
     return None
 
 
-def book_appointment(phone: str, name: str, date: str, time: str, reason: Optional[str] = None) -> dict:
-    if check_slot_conflict(date, time):
-        raise ValueError(f"Slot {time} on {date} is already booked")
-
-    available = get_available_slots(date)
-    if time not in available:
-        raise ValueError(f"Slot {time} on {date} is not available")
-
-    appointment_id = create_appointment(phone, name, date, time, reason)
+def book_appointment(
+    phone: str,
+    name: str,
+    date: str,
+    time: str,
+    reason: Optional[str] = None,
+    patient_age: Optional[str] = None,
+    id_card: Optional[str] = None,
+    details: Optional[dict] = None,
+) -> dict:
+    # Book directly without slot conflict checks — per admin preference
+    appointment_id = create_appointment(phone, name, date, time, reason, patient_age, id_card, details)
     appointment = get_appointment_by_id(appointment_id)
     return appointment
 

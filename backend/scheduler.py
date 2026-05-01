@@ -1,9 +1,13 @@
 import logging
+import os
+import glob
+import time
 from datetime import datetime, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 
 from backend.config import settings
 from backend.database import (
@@ -19,7 +23,10 @@ from backend.database import (
 
 logger = logging.getLogger(__name__)
 
-scheduler = AsyncIOScheduler()
+jobstores = {
+    'default': SQLAlchemyJobStore(url='sqlite:///database/jobs.sqlite')
+}
+scheduler = AsyncIOScheduler(jobstores=jobstores)
 
 
 async def _send_reminder_24h(appointment: dict):
@@ -60,7 +67,7 @@ async def _send_reminder_2h(appointment: dict):
 
 
 async def _send_no_show_followup(appointment: dict):
-    from backend.whatsapp_sender import send_text, send_button_message
+    from backend.whatsapp_sender import send_text
 
     name = appointment["patient_name"]
     time_display = appointment["time"]
@@ -78,11 +85,7 @@ async def _send_no_show_followup(appointment: dict):
 
     try:
         update_appointment_status(appointment["id"], "no_show")
-        await send_button_message(
-            appointment["phone"],
-            text,
-            ["Reschedule", "Found doctor", "Call back later", "Unwell - need help"],
-        )
+        await send_text(appointment["phone"], text)
         mark_followup_sent(appointment["id"])
         logger.info(f"No-show followup sent for appointment {appointment['id']}")
     except Exception as e:
@@ -215,8 +218,32 @@ async def run_no_show_scan():
         except Exception as e:
             logger.error(f"Error in no-show scan for appointment {appt.get('id')}: {e}")
 
+async def cleanup_audio_cache():
+    logger.info("Running audio cache cleanup...")
+    cache_dir = settings.AUDIO_CACHE_DIR
+    if not os.path.exists(cache_dir):
+        return
+
+    now = time.time()
+    cutoff = now - (7 * 86400) # 7 days
+    
+    deleted_count = 0
+    for ext in ("*.wav", "*.ogg"):
+        for file_path in glob.glob(os.path.join(cache_dir, ext)):
+            try:
+                if os.path.isfile(file_path) and os.stat(file_path).st_mtime < cutoff:
+                    os.remove(file_path)
+                    deleted_count += 1
+            except Exception as e:
+                logger.error(f"Error deleting cached file {file_path}: {e}")
+                
+    logger.info(f"Audio cache cleanup complete. Deleted {deleted_count} files.")
+
 
 def init_scheduler():
+    # Ensure DB directory exists for the SQLiteJobStore
+    os.makedirs("database", exist_ok=True)
+    
     scheduler.add_job(
         run_daily_reminder_scan,
         trigger=CronTrigger(hour=8, minute=0),
@@ -231,5 +258,13 @@ def init_scheduler():
         replace_existing=True,
     )
 
+    scheduler.add_job(
+        cleanup_audio_cache,
+        trigger=CronTrigger(hour=3, minute=0), # Run daily at 3 AM
+        id="cleanup_audio_cache",
+        replace_existing=True,
+    )
+
     scheduler.start()
     logger.info("Scheduler started")
+

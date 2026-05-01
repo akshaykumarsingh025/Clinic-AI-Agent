@@ -1,8 +1,34 @@
+# WhatsApp auth sessions
 auth_info/
+auth_info_backup_*/
+
+# Node
 node_modules/
+
+# Python
 __pycache__/
 *.pyc
-database/clinic.db
-audio_cache/incoming/
-.env
+*.pyo
+.venv/
+venv/
+
+# Database (local runtime data)
+database/*.db
+database/*.db-shm
+database/*.db-wal
+
+# Exports & caches
+exports/
+audio_cache/
 logs/*.log
+
+# Environment secrets
+.env
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Voice models (large binaries)
+voices/*.onnx
+voices/*.onnx.json

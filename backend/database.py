@@ -1,6 +1,7 @@
 import sqlite3
 import os
-from typing import Optional
+import json
+from typing import Any, Optional
 from backend.config import settings
 
 DB_PATH = settings.DB_PATH
@@ -21,6 +22,20 @@ def get_db() -> sqlite3.Connection:
     return conn
 
 
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str):
+    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _json_or_none(value: Any) -> Optional[str]:
+    if value is None or value == "":
+        return None
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False)
+
+
 def init_db():
     _ensure_db_dir()
     conn = get_db()
@@ -31,6 +46,9 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             phone TEXT UNIQUE NOT NULL,
             name TEXT,
+            age TEXT,
+            id_card TEXT,
+            extra_details_json TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
@@ -42,6 +60,9 @@ def init_db():
             date TEXT NOT NULL,
             time TEXT NOT NULL,
             reason TEXT,
+            patient_age TEXT,
+            id_card TEXT,
+            details_json TEXT,
             status TEXT DEFAULT 'booked',
             reminder_sent INTEGER DEFAULT 0,
             followup_sent INTEGER DEFAULT 0,
@@ -71,6 +92,13 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_conversations_phone ON conversations(phone);
     """)
 
+    _ensure_column(conn, "patients", "age", "TEXT")
+    _ensure_column(conn, "patients", "id_card", "TEXT")
+    _ensure_column(conn, "patients", "extra_details_json", "TEXT")
+    _ensure_column(conn, "appointments", "patient_age", "TEXT")
+    _ensure_column(conn, "appointments", "id_card", "TEXT")
+    _ensure_column(conn, "appointments", "details_json", "TEXT")
+
     conn.commit()
     conn.close()
 
@@ -82,14 +110,29 @@ def get_patient(phone: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
-def create_patient(phone: str, name: Optional[str] = None) -> dict:
+def create_patient(
+    phone: str,
+    name: Optional[str] = None,
+    age: Optional[str] = None,
+    id_card: Optional[str] = None,
+    extra_details: Any = None,
+) -> dict:
     conn = get_db()
     cursor = conn.execute(
-        "INSERT OR IGNORE INTO patients (phone, name) VALUES (?, ?)",
-        (phone, name),
+        "INSERT OR IGNORE INTO patients (phone, name, age, id_card, extra_details_json) VALUES (?, ?, ?, ?, ?)",
+        (phone, name, age, id_card, _json_or_none(extra_details)),
     )
     if name:
         conn.execute("UPDATE patients SET name = ? WHERE phone = ? AND (name IS NULL OR name = '')", (name, phone))
+    if age:
+        conn.execute("UPDATE patients SET age = ? WHERE phone = ? AND (age IS NULL OR age = '')", (age, phone))
+    if id_card:
+        conn.execute("UPDATE patients SET id_card = ? WHERE phone = ? AND (id_card IS NULL OR id_card = '')", (id_card, phone))
+    if extra_details:
+        conn.execute(
+            "UPDATE patients SET extra_details_json = COALESCE(extra_details_json, ?) WHERE phone = ?",
+            (_json_or_none(extra_details), phone),
+        )
     row = conn.execute("SELECT * FROM patients WHERE phone = ?", (phone,)).fetchone()
     conn.commit()
     conn.close()
@@ -106,21 +149,58 @@ def get_appointments(date: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def create_appointment(phone: str, name: str, date: str, time: str, reason: Optional[str] = None) -> int:
+def get_all_appointments() -> list[dict]:
+    conn = get_db()
+    rows = conn.execute(
+        """
+        SELECT
+            a.*,
+            p.age AS patient_record_age,
+            p.id_card AS patient_record_id_card,
+            p.extra_details_json AS patient_record_details_json
+        FROM appointments a
+        LEFT JOIN patients p ON p.id = a.patient_id
+        ORDER BY a.date DESC, a.time DESC, a.id DESC
+        """
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def create_appointment(
+    phone: str,
+    name: str,
+    date: str,
+    time: str,
+    reason: Optional[str] = None,
+    patient_age: Optional[str] = None,
+    id_card: Optional[str] = None,
+    details: Any = None,
+) -> int:
     conn = get_db()
     patient = get_patient(phone)
     if not patient:
-        create_patient(phone, name)
+        create_patient(phone, name, patient_age, id_card, details)
     else:
         if name and (not patient.get("name") or patient["name"] == ""):
             conn.execute("UPDATE patients SET name = ? WHERE phone = ?", (name, phone))
+        if patient_age and (not patient.get("age") or patient["age"] == ""):
+            conn.execute("UPDATE patients SET age = ? WHERE phone = ?", (patient_age, phone))
+        if id_card and (not patient.get("id_card") or patient["id_card"] == ""):
+            conn.execute("UPDATE patients SET id_card = ? WHERE phone = ?", (id_card, phone))
+        if details and (not patient.get("extra_details_json") or patient["extra_details_json"] == ""):
+            conn.execute("UPDATE patients SET extra_details_json = ? WHERE phone = ?", (_json_or_none(details), phone))
 
     patient = get_patient(phone)
     patient_id = patient["id"]
 
     cursor = conn.execute(
-        "INSERT INTO appointments (patient_id, phone, patient_name, date, time, reason) VALUES (?, ?, ?, ?, ?, ?)",
-        (patient_id, phone, name, date, time, reason),
+        """
+        INSERT INTO appointments
+        (patient_id, phone, patient_name, date, time, reason, patient_age, id_card, details_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (patient_id, phone, name, date, time, reason, patient_age, id_card, _json_or_none(details)),
     )
     appointment_id = cursor.lastrowid
     conn.commit()

@@ -16,3 +16,4 @@ echo All services starting!
 echo Scan the QR code in the WhatsApp Bot window with your clinic WhatsApp.
 echo Admin dashboard: http://localhost:8000/admin
 echo API docs: http://localhost:8000/docs
+echo Control UI: run start_control_ui.bat

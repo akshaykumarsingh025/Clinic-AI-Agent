@@ -7,10 +7,12 @@ const { downloadMedia } = require('./downloader');
 const { sendText, sendAudio, sendButtons } = require('./sender');
 
 const FASTAPI_URL = process.env.FASTAPI_URL || 'http://localhost:8000';
-const AUTH_FOLDER = path.join(__dirname, 'auth_info');
+const AUTH_FOLDER = process.env.WHATSAPP_AUTH_FOLDER || path.join(__dirname, 'auth_info');
 
 let currentSock = null;
 let isReconnecting = false;
+let latestQr = null;
+let connectionStatus = 'starting';
 
 function getStatusCode(error) {
     if (!error) return null;
@@ -45,12 +47,15 @@ async function connectWhatsApp() {
             const { connection, lastDisconnect, qr } = update;
 
             if (qr) {
-                console.log('\n📱 Scan this QR code with your clinic WhatsApp:\n');
+                latestQr = qr;
+                connectionStatus = 'qr';
+                console.log('\nScan this QR code with your clinic WhatsApp:\n');
                 QRCode.generate(qr, { small: true });
             }
 
             if (connection === 'close') {
                 currentSock = null;
+                connectionStatus = 'closed';
                 const statusCode = getStatusCode(lastDisconnect?.error);
                 const loggedOut = statusCode === DisconnectReason.loggedOut;
                 console.log('Connection closed. Logged out:', loggedOut, '| Status:', statusCode);
@@ -65,7 +70,9 @@ async function connectWhatsApp() {
 
             if (connection === 'open') {
                 isReconnecting = false;
-                console.log('✅ WhatsApp bot connected!');
+                latestQr = null;
+                connectionStatus = 'open';
+                console.log('WhatsApp bot connected!');
             }
         });
 
@@ -154,6 +161,15 @@ async function connectWhatsApp() {
 
 const app = express();
 app.use(express.json());
+
+app.get('/status', (req, res) => {
+    res.json({
+        connected: Boolean(currentSock && connectionStatus === 'open'),
+        status: connectionStatus,
+        qr: latestQr,
+        auth_folder: AUTH_FOLDER,
+    });
+});
 
 app.post('/send/text', async (req, res) => {
     try {

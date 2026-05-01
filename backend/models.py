@@ -28,6 +28,9 @@ class AppointmentResponse(BaseModel):
     date: str
     time: str
     reason: Optional[str] = None
+    patient_age: Optional[str] = None
+    id_card: Optional[str] = None
+    details_json: Optional[str] = None
     status: str
     reminder_sent: bool
     followup_sent: bool
@@ -43,8 +46,16 @@ class AIResponse(BaseModel):
     time: Optional[str] = None
     time_preference: Optional[str] = None
     reason: Optional[str] = None
+    patient_age: Optional[str] = None
+    id_card: Optional[str] = None
+    patient_details: Optional[dict] = None
     needs_more_info: bool = False
     booking_ready: bool = False
     no_show_response_type: Optional[str] = None
     language: str = "english"
     reply: str
+
+
+class GoogleSheetSyncRequest(BaseModel):
+    sheet_url: Optional[str] = None
+    credentials_path: Optional[str] = None

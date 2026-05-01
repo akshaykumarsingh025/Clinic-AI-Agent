@@ -8,3 +8,7 @@ pydantic
 httpx
 aiofiles
 ffmpeg-python
+numpy
+openpyxl
+gspread
+google-auth

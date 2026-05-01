@@ -1,40 +1,67 @@
 import os
-from dotenv import load_dotenv
+from dotenv import load_dotenv, set_key
 
 load_dotenv()
 
+ENV_FILE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
+
 
 class Settings:
-    CLINIC_NAME: str = os.getenv("CLINIC_NAME", "Dr. Deepika Singh Clinic")
-    DOCTOR_NAME: str = os.getenv("DOCTOR_NAME", "Dr. Deepika Singh")
-    CLINIC_SPECIALTY: str = os.getenv("CLINIC_SPECIALTY", "Gynecologist")
-    CLINIC_ADDRESS: str = os.getenv("CLINIC_ADDRESS", "South Delhi")
-    CLINIC_PHONE: str = os.getenv("CLINIC_PHONE", "+91XXXXXXXXXX")
+    def __init__(self):
+        self.CLINIC_NAME: str = os.getenv("CLINIC_NAME", "Dr. Deepika Singh Clinic")
+        self.DOCTOR_NAME: str = os.getenv("DOCTOR_NAME", "Dr. Deepika Singh")
+        self.CLINIC_SPECIALTY: str = os.getenv("CLINIC_SPECIALTY", "Gynecologist")
+        self.CLINIC_ADDRESS: str = os.getenv("CLINIC_ADDRESS", "South Delhi")
+        self.CLINIC_PHONE: str = os.getenv("CLINIC_PHONE", "+91XXXXXXXXXX")
+        self.APPOINTMENT_FEE: str = os.getenv("APPOINTMENT_FEE", "Please confirm with the clinic")
+        self.CLINIC_TIMEZONE: str = os.getenv("CLINIC_TIMEZONE", "Asia/Kolkata")
 
-    SLOT_DURATION_MINUTES: int = int(os.getenv("SLOT_DURATION_MINUTES", "20"))
-    MORNING_START: str = os.getenv("MORNING_START", "10:00")
-    MORNING_END: str = os.getenv("MORNING_END", "13:00")
-    EVENING_START: str = os.getenv("EVENING_START", "17:00")
-    EVENING_END: str = os.getenv("EVENING_END", "20:00")
-    WORKING_DAYS: list[str] = os.getenv("WORKING_DAYS", "Mon,Tue,Wed,Thu,Fri,Sat").split(",")
+        self.SLOT_DURATION_MINUTES: int = int(os.getenv("SLOT_DURATION_MINUTES", "20"))
+        self.MORNING_START: str = os.getenv("MORNING_START", "10:00")
+        self.MORNING_END: str = os.getenv("MORNING_END", "13:00")
+        self.EVENING_START: str = os.getenv("EVENING_START", "17:00")
+        self.EVENING_END: str = os.getenv("EVENING_END", "20:00")
+        self.WORKING_DAYS: list[str] = os.getenv("WORKING_DAYS", "Mon,Tue,Wed,Thu,Fri,Sat").split(",")
 
-    OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "gemma3:4b")
-    OLLAMA_HOST: str = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+        self.OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "gemma4:e4b")
+        self.OLLAMA_HOST: str = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 
-    PIPER_BINARY: str = os.getenv("PIPER_BINARY", "piper")
-    PIPER_VOICE: str = os.getenv("PIPER_VOICE", "./voices/en_IN-female-medium.onnx")
-    AUDIO_CACHE_DIR: str = os.getenv("AUDIO_CACHE_DIR", "./audio_cache")
+        self.PIPER_BINARY: str = os.getenv("PIPER_BINARY", "piper")
+        self.PIPER_VOICE: str = os.getenv("PIPER_VOICE", "./voices/en_IN-female-medium.onnx")
+        self.AUDIO_CACHE_DIR: str = os.getenv("AUDIO_CACHE_DIR", "./audio_cache")
+        self.SEND_AUDIO_REPLIES_FOR_TEXT: bool = os.getenv("SEND_AUDIO_REPLIES_FOR_TEXT", "false").lower() in ("1", "true", "yes", "on")
+        self.TTS_PROVIDER: str = os.getenv("TTS_PROVIDER", "piper")
+        self.VOICECLONE_PROJECT_DIR: str = os.getenv("VOICECLONE_PROJECT_DIR", r"D:\Software\Projects\VoiceCloneReels")
+        self.VOICECLONE_PYTHON: str = os.getenv("VOICECLONE_PYTHON", "")
+        self.VOICECLONE_VOICE_SAMPLE: str = os.getenv("VOICECLONE_VOICE_SAMPLE", "")
+        self.VOICECLONE_LANGUAGE: str = os.getenv("VOICECLONE_LANGUAGE", "auto")
+        self.VOICECLONE_REF_TEXT: str = os.getenv("VOICECLONE_REF_TEXT", "")
 
-    WHATSAPP_BOT_URL: str = os.getenv("WHATSAPP_BOT_URL", "http://localhost:3001")
-    FASTAPI_HOST: str = os.getenv("FASTAPI_HOST", "0.0.0.0")
-    FASTAPI_PORT: int = int(os.getenv("FASTAPI_PORT", "8000"))
+        self.WHATSAPP_BOT_URL: str = os.getenv("WHATSAPP_BOT_URL", "http://localhost:3001")
+        self.FASTAPI_HOST: str = os.getenv("FASTAPI_HOST", "0.0.0.0")
+        self.FASTAPI_PORT: int = int(os.getenv("FASTAPI_PORT", "8000"))
 
-    DB_PATH: str = os.getenv("DB_PATH", "./database/clinic.db")
+        self.DB_PATH: str = os.getenv("DB_PATH", "./database/clinic.db")
+        self.EXPORT_DIR: str = os.getenv("EXPORT_DIR", "./exports")
+        self.GOOGLE_SHEET_URL: str = os.getenv("GOOGLE_SHEET_URL", "")
+        self.GOOGLE_SERVICE_ACCOUNT_JSON: str = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
 
     @property
     def WORKING_DAY_INDICES(self) -> set[int]:
         day_map = {"Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Fri": 4, "Sat": 5, "Sun": 6}
         return {day_map[d] for d in self.WORKING_DAYS if d in day_map}
+        
+    def update_setting(self, key: str, value: str):
+        if hasattr(self, key):
+            if key == "WORKING_DAYS":
+                setattr(self, key, value.split(","))
+            elif key in ("SLOT_DURATION_MINUTES", "FASTAPI_PORT"):
+                setattr(self, key, int(value))
+            elif key == "SEND_AUDIO_REPLIES_FOR_TEXT":
+                setattr(self, key, value.lower() in ("1", "true", "yes", "on"))
+            else:
+                setattr(self, key, value)
+            set_key(ENV_FILE_PATH, key, value)
 
 
 settings = Settings()
