@@ -105,9 +105,11 @@ def init_db():
 
 def get_patient(phone: str) -> Optional[dict]:
     conn = get_db()
-    row = conn.execute("SELECT * FROM patients WHERE phone = ?", (phone,)).fetchone()
-    conn.close()
-    return dict(row) if row else None
+    try:
+        row = conn.execute("SELECT * FROM patients WHERE phone = ?", (phone,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
 
 
 def create_patient(
@@ -141,12 +143,14 @@ def create_patient(
 
 def get_appointments(date: str) -> list[dict]:
     conn = get_db()
-    rows = conn.execute(
-        "SELECT * FROM appointments WHERE date = ? ORDER BY time",
-        (date,),
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    try:
+        rows = conn.execute(
+            "SELECT * FROM appointments WHERE date = ? ORDER BY time",
+            (date,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 
 def get_all_appointments() -> list[dict]:
@@ -210,12 +214,14 @@ def create_appointment(
 
 def update_appointment_status(appointment_id: int, status: str):
     conn = get_db()
-    conn.execute(
-        "UPDATE appointments SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        (status, appointment_id),
-    )
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute(
+            "UPDATE appointments SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (status, appointment_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def get_upcoming_appointments() -> list[dict]:
@@ -244,22 +250,26 @@ def get_past_unconfirmed(minutes_ago: int = 45) -> list[dict]:
 
 def save_conversation(phone: str, role: str, content: str):
     conn = get_db()
-    conn.execute(
-        "INSERT INTO conversations (phone, role, content) VALUES (?, ?, ?)",
-        (phone, role, content),
-    )
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute(
+            "INSERT INTO conversations (phone, role, content) VALUES (?, ?, ?)",
+            (phone, role, content),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def get_conversation_history(phone: str, limit: int = 10) -> list[dict]:
     conn = get_db()
-    rows = conn.execute(
-        "SELECT role, content FROM conversations WHERE phone = ? ORDER BY id DESC LIMIT ?",
-        (phone, limit),
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in reversed(rows)]
+    try:
+        rows = conn.execute(
+            "SELECT role, content FROM conversations WHERE phone = ? ORDER BY id DESC LIMIT ?",
+            (phone, limit),
+        ).fetchall()
+        return [dict(r) for r in reversed(rows)]
+    finally:
+        conn.close()
 
 
 def clear_old_conversations(phone: str):

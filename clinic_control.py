@@ -11,6 +11,7 @@ from tkinter import BooleanVar, StringVar, Tk, filedialog, messagebox
 from tkinter import scrolledtext, ttk
 from urllib.parse import urlparse
 from urllib.request import urlopen, Request
+from urllib.error import URLError
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -213,7 +214,16 @@ class ClinicControlApp(Tk):
         self._setting_row(clinic, 0, "CLINIC_PHONE", "Clinic phone")
         self._setting_row(clinic, 1, "APPOINTMENT_FEE", "Appointment fee")
         self._setting_row(clinic, 2, "CLINIC_TIMEZONE", "Clinic timezone")
-        self._setting_row(clinic, 3, "OLLAMA_MODEL", "Ollama model")
+
+        # Ollama model dropdown
+        ttk.Label(clinic, text="Ollama model").grid(row=3, column=0, sticky="w", padx=6, pady=5)
+        model_var = StringVar(value=self.env_values.get("OLLAMA_MODEL", DEFAULTS.get("OLLAMA_MODEL", "")))
+        self.vars["OLLAMA_MODEL"] = model_var
+        self.model_combo = ttk.Combobox(clinic, textvariable=model_var, state="readonly", width=35)
+        self.model_combo.grid(row=3, column=1, sticky="w", padx=6, pady=5)
+        ttk.Button(clinic, text="Refresh", command=self._refresh_ollama_models).grid(row=3, column=2, padx=6, pady=5)
+        self._refresh_ollama_models()  # Load models on startup
+
         self._setting_row(clinic, 4, "OLLAMA_HOST", "Ollama host")
         self._setting_row(clinic, 5, "FASTAPI_PORT", "Backend port", width=16)
         self._setting_row(clinic, 6, "WHATSAPP_BOT_URL", "WhatsApp bot URL")
@@ -265,6 +275,26 @@ class ClinicControlApp(Tk):
         actions.grid(row=4, column=0, sticky="ew", pady=10)
         ttk.Button(actions, text="Save Settings", command=self.save_settings).pack(side="left", padx=6)
         ttk.Button(actions, text="Reload From .env", command=self.reload_settings).pack(side="left", padx=6)
+
+    def _refresh_ollama_models(self):
+        """Fetch model list from Ollama API and populate the dropdown."""
+        current_val = self.vars.get("OLLAMA_MODEL", StringVar()).get()
+        ollama_host = self.vars.get("OLLAMA_HOST", StringVar(value="http://localhost:11434")).get()
+        models = [current_val] if current_val else []
+        try:
+            req = Request(f"{ollama_host}/api/tags", method="GET")
+            with urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode())
+                fetched = [m["name"] for m in data.get("models", [])]
+                if fetched:
+                    models = fetched
+        except Exception:
+            pass  # Keep current value as fallback
+        self.model_combo["values"] = models
+        if current_val and current_val in models:
+            self.model_combo.set(current_val)
+        elif models:
+            self.model_combo.set(models[0])
 
     def _build_appointments_tab(self):
         actions = ttk.Frame(self.appointments_tab)

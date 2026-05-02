@@ -13,6 +13,11 @@ from backend.database import (
 )
 
 
+# Continuous booking window: 9 AM to 9 PM
+BOOKING_START = "09:00"
+BOOKING_END = "21:00"
+
+
 def generate_all_slots(date: str) -> list[str]:
     date_obj = datetime.strptime(date, "%Y-%m-%d")
 
@@ -23,18 +28,10 @@ def generate_all_slots(date: str) -> list[str]:
         return []
 
     slots = []
-
-    morning_start = datetime.strptime(settings.MORNING_START, "%H:%M")
-    morning_end = datetime.strptime(settings.MORNING_END, "%H:%M")
-    current = morning_start
-    while current < morning_end:
-        slots.append(current.strftime("%H:%M"))
-        current += timedelta(minutes=settings.SLOT_DURATION_MINUTES)
-
-    evening_start = datetime.strptime(settings.EVENING_START, "%H:%M")
-    evening_end = datetime.strptime(settings.EVENING_END, "%H:%M")
-    current = evening_start
-    while current < evening_end:
+    start = datetime.strptime(BOOKING_START, "%H:%M")
+    end = datetime.strptime(BOOKING_END, "%H:%M")
+    current = start
+    while current < end:
         slots.append(current.strftime("%H:%M"))
         current += timedelta(minutes=settings.SLOT_DURATION_MINUTES)
 
@@ -65,10 +62,13 @@ def find_best_slot(date: str, preference: Optional[str] = None) -> Optional[str]
         return None
 
     if preference == "morning":
-        morning = [s for s in available if s < "13:00"]
+        morning = [s for s in available if s < "12:00"]
         return morning[0] if morning else available[0]
+    elif preference == "afternoon":
+        afternoon = [s for s in available if "12:00" <= s < "17:00"]
+        return afternoon[0] if afternoon else available[0]
     elif preference == "evening":
-        evening = [s for s in available if s >= "13:00"]
+        evening = [s for s in available if s >= "17:00"]
         return evening[0] if evening else available[0]
 
     return available[0]
@@ -131,12 +131,10 @@ def reschedule_appointment(appointment_id: int, new_date: str, new_time: str) ->
     if appointment["status"] not in ("booked", "confirmed"):
         return False
 
-    if check_slot_conflict(new_date, new_time):
-        return False
-
+    # Mark old appointment as rescheduled and create new one
     update_appointment_status(appointment_id, "rescheduled")
 
-    new_id = create_appointment(
+    create_appointment(
         appointment["phone"],
         appointment["patient_name"],
         new_date,
@@ -163,13 +161,17 @@ def format_appointment_confirmation(appt: dict) -> str:
     time_obj = datetime.strptime(appt["time"], "%H:%M")
     formatted_time = time_obj.strftime("%I:%M %p")
 
+    fee_line = ""
+    if settings.APPOINTMENT_FEE:
+        fee_line = f"\n  Fee: {settings.APPOINTMENT_FEE}"
+
     return (
         f"Appointment confirmed:\n"
         f"  Date: {day_name}, {formatted_date}\n"
         f"  Time: {formatted_time}\n"
         f"  Doctor: {settings.DOCTOR_NAME}\n"
         f"  Clinic: {settings.CLINIC_NAME}\n"
-        f"  Address: {settings.CLINIC_ADDRESS}\n"
+        f"  Address: {settings.CLINIC_ADDRESS}{fee_line}\n"
         f"You will receive a reminder before your appointment."
     )
 

@@ -1,6 +1,6 @@
 import json
 import re
-from typing import Optional
+from typing import Any, Optional
 
 import ollama
 
@@ -8,7 +8,6 @@ from backend.config import settings
 from backend.database import (
     get_conversation_history,
     save_conversation,
-    get_patient_appointments,
 )
 from backend.booking import get_available_slots
 from backend.nlu import (
@@ -20,73 +19,74 @@ from backend.nlu import (
     parse_time_from_text,
 )
 
-SYSTEM_PROMPT = """You are Priya, a friendly appointment booking assistant for {clinic_name}.
-Doctor: {doctor_name}, {specialty}, {address}.
-Appointment fee: {appointment_fee}.
-Current clinic date and time: {current_datetime}.
+SYSTEM_PROMPT = """You are Priya, a warm and friendly appointment booking assistant at {clinic_name}.
+You speak like a real person on WhatsApp — short messages, natural tone, no robotic lists.
 
-AVAILABLE HOURS: {working_days_str}
-- Morning: {morning_start} to {morning_end}
-- Evening: {evening_start} to {evening_end}
-- Each slot is {slot_duration} minutes.
+CLINIC INFO:
+- Doctor: {doctor_name} ({specialty})
+- Address: {address}
+- Fee: {appointment_fee}
+- Today: {current_datetime}
+- Booking hours: Every day, 9:00 AM to 9:00 PM
+- Slot duration: {slot_duration} minutes
 
-YOUR JOB:
-1. Greet warmly on first message
-2. Understand what the patient wants
-3. Collect required info step by step (don't ask everything at once)
-4. Confirm booking clearly
+{patient_context}
+
+YOUR PERSONALITY:
+- You're helpful, warm, slightly chatty but efficient
+- In Hinglish you use "ji", "bilkul", "zaroor" naturally
+- Keep messages SHORT — this is WhatsApp, not email
+- Never send bullet lists or numbered steps in conversation
+- Acknowledge what the patient said before asking the next thing
+- If they sound worried or unwell, show empathy first
+- NEVER use emojis, asterisks or decorative formatting
 
 LANGUAGE RULES:
-- If the patient is speaking PURELY in English, you MUST reply ONLY in English.
-- If the patient is speaking in Hindi or Hinglish, you MUST reply ONLY in Hinglish (Hindi written in English alphabet).
+- If patient writes in English → reply in English only
+- If patient writes in Hindi/Hinglish → reply in Hinglish (Hindi in English letters)
+- Match their vibe and style
 
-STRICT SCOPE:
-- You only answer questions related to {clinic_name}, gynecology appointment booking, available slots, appointment fee, clinic timings, address, cancellation, rescheduling, and appointment status.
-- Do not give medical diagnosis, medicine dosage, emergency care instructions, or unrelated answers. For medical advice, ask them to book/consult the doctor.
-- If the user asks something unrelated, politely say you can help only with {clinic_name} appointments and clinic details.
-- Never mention this JSON schema to the patient. The "reply" value must be a natural WhatsApp message only.
-- Do not use emojis or decorative symbols.
+WHAT YOU DO:
+- Book, reschedule, cancel appointments
+- Answer questions about clinic timings, address, fees, doctor speciality
+- For any medical questions → gently redirect them to consult the doctor in person
+- Never diagnose, prescribe, or give medical advice
 
-DATE AND TIME RULES:
-- Understand Hinglish/Hindi relative dates: aaj/today, kal/tomorrow, parso/day after tomorrow, and weekdays.
-- Use the current clinic date/time above. Never book a date or time that has already passed.
-- If the requested slot is outside clinic hours, politely suggest a time within clinic hours.
-- Bare numbers like "1240" mean 12:40, "430" means 4:30.
+DATE/TIME RULES:
+- aaj/today, kal/tomorrow, parso = day after tomorrow
+- Numbers like "1240" = 12:40, "430" = 4:30
+- Accept any time from 9:00 AM to 9:00 PM
+- Don't book past dates or times
 
-INTENTS YOU HANDLE:
-- BOOK: Patient wants a new appointment. IMPORTANT: Once a patient starts booking, keep the intent as BOOK until the booking is complete. Do NOT switch to RESCHEDULE unless the patient explicitly says they want to change an EXISTING appointment.
-- RESCHEDULE: Change an EXISTING booked appointment (patient must already have one)
+BOOKING FLOW:
+- Phone number: NEVER ask — you already have it from WhatsApp
+- Name: If you already know it (see patient context above), use it and don't ask again
+- What you need: name (if new patient), reason/problem, date and time
+- ID card: Ask once, only if not already stored
+- If patient gives everything in one message, book immediately — don't ask again
+- If anything is missing, ask naturally in conversation
+- IMPORTANT: Once booking starts, keep intent as BOOK until done. Don't switch to RESCHEDULE unless they explicitly want to change an EXISTING appointment.
+
+DUPLICATE AWARENESS:
+- If the patient already has an active appointment (check patient context), mention it naturally
+- Don't block them — just inform and ask what they'd like to do
+
+INTENT TYPES:
+- BOOK: New appointment
+- RESCHEDULE: Change existing appointment date/time
 - CANCEL: Cancel appointment
-- STATUS: Check their appointment details
-- NO_SHOW_RESPONSE: Patient replied to missed appointment follow-up
-- QUERY: General question about clinic
-- UNKNOWN: Cannot understand
+- STATUS: Check appointment details
+- NO_SHOW_RESPONSE: Replying to missed appointment follow-up (be gentle, never pushy)
+- QUERY: General clinic question
+- UNKNOWN: Can't understand
 
-REQUIRED FOR BOOKING:
-You MUST ask for and collect ALL of the following before setting booking_ready to true:
-1. Patient's Name
-2. Reason for visit / problem
-3. Government ID Card (like Aadhar Card or Driving License)
-4. Date and Time of appointment
-
-NOTE: The patient's phone number is ALREADY available from WhatsApp. Do NOT ask for it.
-
-CRITICAL RULES:
-- When a patient provides a time like "1240" or "kal 1130 baje" during an ongoing booking, understand it as the time for the booking. Do NOT change the intent.
-- If someone says "kal 11:30 baje" or similar during booking, set date and time in your response and keep intent as BOOK.
-- Always be warm and respectful
-- Do NOT refuse to book because a slot is taken. Just book whatever the patient asks.
-- Confirm all details before finalising
-- After booking, summarise clearly with date, time, doctor name
-- For NO_SHOW_RESPONSE, be empathetic, never pushy
-
-Respond ONLY in this JSON format (no extra text, no markdown):
+Respond ONLY in this JSON (no markdown, no extra text):
 {{
-  "intent": "BOOK|RESCHEDULE|CANCEL|STATUS|NO_SHOW_RESPONSE|QUERY|UNKNOWN|INCOMPLETE",
+  "intent": "BOOK|RESCHEDULE|CANCEL|STATUS|NO_SHOW_RESPONSE|QUERY|UNKNOWN",
   "patient_name": "string or null",
   "date": "YYYY-MM-DD or null",
   "time": "HH:MM or null",
-  "time_preference": "morning|evening|null",
+  "time_preference": "morning|afternoon|evening|null",
   "reason": "string or null",
   "patient_age": "string or null",
   "id_card": "string or null",
@@ -95,12 +95,49 @@ Respond ONLY in this JSON format (no extra text, no markdown):
   "booking_ready": true or false,
   "no_show_response_type": "reschedule|found_doctor|callback|unwell|null",
   "language": "hinglish|english",
-  "reply": "Your friendly message to the patient"
+  "reply": "Your natural WhatsApp message to the patient"
 }}"""
 
 
-def _build_system_prompt() -> str:
-    now = clinic_now().strftime("%A, %d %B %Y, %I:%M %p %Z")
+def _build_patient_context(
+    patient_record: Optional[dict] = None,
+    active_appointments: Optional[list[dict]] = None,
+) -> str:
+    """Build a context block so the AI knows who it's talking to."""
+    lines = []
+
+    if patient_record:
+        name = patient_record.get("name")
+        if name:
+            lines.append(f"RETURNING PATIENT: {name}")
+        age = patient_record.get("age")
+        if age:
+            lines.append(f"  Age: {age}")
+        id_card = patient_record.get("id_card")
+        if id_card:
+            lines.append(f"  ID Card on file: {id_card}")
+    else:
+        lines.append("NEW PATIENT — name not yet known.")
+
+    if active_appointments:
+        lines.append("ACTIVE APPOINTMENTS:")
+        for a in active_appointments:
+            lines.append(
+                f"  - {a['date']} at {a['time']} "
+                f"(status: {a['status']}, reason: {a.get('reason', 'N/A')})"
+            )
+    else:
+        lines.append("No existing appointments.")
+
+    return "\n".join(lines)
+
+
+def _build_system_prompt(
+    patient_record: Optional[dict] = None,
+    active_appointments: Optional[list[dict]] = None,
+) -> str:
+    now = clinic_now().strftime("%A, %d %B %Y, %I:%M %p")
+    patient_ctx = _build_patient_context(patient_record, active_appointments)
     return SYSTEM_PROMPT.format(
         clinic_name=settings.CLINIC_NAME,
         doctor_name=settings.DOCTOR_NAME,
@@ -108,12 +145,8 @@ def _build_system_prompt() -> str:
         address=settings.CLINIC_ADDRESS,
         appointment_fee=settings.APPOINTMENT_FEE,
         current_datetime=now,
-        working_days_str=", ".join(settings.WORKING_DAYS),
-        morning_start=settings.MORNING_START,
-        morning_end=settings.MORNING_END,
-        evening_start=settings.EVENING_START,
-        evening_end=settings.EVENING_END,
         slot_duration=settings.SLOT_DURATION_MINUTES,
+        patient_context=patient_ctx,
     )
 
 
@@ -125,45 +158,35 @@ def _get_slots_context(date: Optional[str] = None) -> str:
     if not slots:
         return f"No slots available on {date}. Suggest another date."
 
-    morning = [s for s in slots if s < "13:00"]
-    evening = [s for s in slots if s >= "13:00"]
+    morning = [s for s in slots if s < "12:00"]
+    afternoon = [s for s in slots if "12:00" <= s < "17:00"]
+    evening = [s for s in slots if s >= "17:00"]
 
     parts = []
     if morning:
-        parts.append(f"Morning slots: {', '.join(morning)}")
+        parts.append(f"Morning: {', '.join(morning)}")
+    if afternoon:
+        parts.append(f"Afternoon: {', '.join(afternoon)}")
     if evening:
-        parts.append(f"Evening slots: {', '.join(evening)}")
+        parts.append(f"Evening: {', '.join(evening)}")
 
     return f"Available slots on {date}: {'; '.join(parts)}"
 
 
-def _get_patient_context(phone: str) -> str:
-    appointments = get_patient_appointments(phone)
-    active = [
-        a for a in appointments
-        if a["status"] in ("booked", "confirmed")
-    ]
-
-    if not active:
-        return "No existing appointments for this patient."
-
-    lines = ["Patient has these active appointments:"]
-    for a in active:
-        lines.append(f"  - {a['date']} at {a['time']} (status: {a['status']}, reason: {a.get('reason', 'N/A')})")
-    return "\n".join(lines)
-
-
-async def get_ai_response(phone: str, user_message: str, available_slots_date: Optional[str] = None) -> dict:
+async def get_ai_response(
+    phone: str,
+    user_message: str,
+    available_slots_date: Optional[str] = None,
+    patient_record: Optional[dict] = None,
+    active_appointments: Optional[list[dict]] = None,
+) -> dict:
     detected_language = detect_language(user_message)
     detected_date = available_slots_date or parse_date_from_text(user_message)
     detected_time = parse_time_from_text(user_message)
     history = get_conversation_history(phone, limit=10)
 
-    messages = [{"role": "system", "content": _build_system_prompt()}]
-
-    patient_context = _get_patient_context(phone)
-    if patient_context != "No existing appointments for this patient.":
-        messages.append({"role": "system", "content": patient_context})
+    system_prompt = _build_system_prompt(patient_record, active_appointments)
+    messages = [{"role": "system", "content": system_prompt}]
 
     slots_context = _get_slots_context(detected_date)
     if detected_date:
