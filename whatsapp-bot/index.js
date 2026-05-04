@@ -2,17 +2,22 @@ const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLat
 const QRCode = require('qrcode-terminal');
 const axios = require('axios');
 const path = require('path');
+const fs = require('fs');
 const express = require('express');
 const { downloadMedia } = require('./downloader');
 const { sendText, sendAudio, sendButtons } = require('./sender');
 
 const FASTAPI_URL = process.env.FASTAPI_URL || 'http://localhost:8000';
 const AUTH_FOLDER = process.env.WHATSAPP_AUTH_FOLDER || path.join(__dirname, 'auth_info');
+const MAX_DECRYPTION_FAILS = 5;
+const DECRYPTION_FAIL_WINDOW_MS = 60000;
 
 let currentSock = null;
 let isReconnecting = false;
 let latestQr = null;
 let connectionStatus = 'starting';
+let decryptionFails = [];
+let decryptionResetting = false;
 
 function getStatusCode(error) {
     if (!error) return null;
@@ -20,6 +25,65 @@ function getStatusCode(error) {
     const data = error?.data || error?.data?.data;
     if (data?.statusCode) return data.statusCode;
     return null;
+}
+
+function recordDecryptionFail() {
+    const now = Date.now();
+    decryptionFails.push(now);
+    decryptionFails = decryptionFails.filter(t => now - t < DECRYPTION_FAIL_WINDOW_MS);
+    console.log(`[whatsapp] Decryption failure (${decryptionFails.length}/${MAX_DECRYPTION_FAILS})`);
+
+    if (decryptionFails.length >= MAX_DECRYPTION_FAILS) {
+        deleteAuthAndReconnect(`${MAX_DECRYPTION_FAILS} decryption errors in ${DECRYPTION_FAIL_WINDOW_MS / 1000}s`);
+    }
+}
+
+async function deleteAuthAndReconnect(reason) {
+    if (decryptionResetting) return;
+    decryptionResetting = true;
+    currentSock = null;
+    connectionStatus = 'resetting';
+    console.log(`[whatsapp] Resetting auth session: ${reason}`);
+
+    try {
+        if (fs.existsSync(AUTH_FOLDER)) {
+            fs.rmSync(AUTH_FOLDER, { recursive: true, force: true });
+            console.log('[whatsapp] Deleted auth_info folder');
+        }
+    } catch (err) {
+        console.error('[whatsapp] Failed to delete auth folder:', err.message);
+    }
+
+    decryptionFails = [];
+    decryptionResetting = false;
+    isReconnecting = false;
+    console.log('[whatsapp] Reconnecting with fresh session in 3 seconds...');
+    setTimeout(() => connectWhatsApp(), 3000);
+}
+
+function createBaileysLogger() {
+    const pino = require('pino');
+    const logger = pino({ level: 'silent' });
+
+    const origError = logger.error.bind(logger);
+    logger.error = function (...args) {
+        const msg = args.map(a => typeof a === 'string' ? a : a?.message || a?.msg || '').join(' ');
+        if (msg.includes('Bad MAC') || msg.includes('MessageCounterError') || msg.includes('Failed to decrypt')) {
+            recordDecryptionFail();
+        }
+        return origError(...args);
+    };
+
+    const origWarn = logger.warn.bind(logger);
+    logger.warn = function (...args) {
+        const msg = args.map(a => typeof a === 'string' ? a : a?.message || a?.msg || '').join(' ');
+        if (msg.includes('Bad MAC') || msg.includes('MessageCounterError') || msg.includes('Failed to decrypt')) {
+            recordDecryptionFail();
+        }
+        return origWarn(...args);
+    };
+
+    return logger;
 }
 
 async function connectWhatsApp() {
@@ -35,8 +99,9 @@ async function connectWhatsApp() {
         const sock = makeWASocket({
             version,
             auth: state,
-            logger: require('pino')({ level: 'silent' }),
+            logger: createBaileysLogger(),
             browser: ['Clinic Agent', 'Chrome', '1.0.0'],
+            printQRInTerminal: false,
         });
 
         currentSock = sock;
@@ -72,6 +137,7 @@ async function connectWhatsApp() {
                 isReconnecting = false;
                 latestQr = null;
                 connectionStatus = 'open';
+                decryptionFails = [];
                 console.log('WhatsApp bot connected!');
             }
         });
@@ -83,7 +149,8 @@ async function connectWhatsApp() {
 
             if (msg.key.remoteJid.endsWith('@g.us')) return;
 
-            const phone = msg.key.remoteJid.replace('@s.whatsapp.net', '');
+            const senderJid = msg.key.remoteJid;
+            const phone = senderJid.split('@')[0];
 
             let messageText = '';
             let audioPath = null;
@@ -123,7 +190,7 @@ async function connectWhatsApp() {
                     });
                     const reply = response.data.reply;
                     if (reply) {
-                        await sendText(sock, phone, reply);
+                        await sendText(sock, senderJid, reply);
                     }
                 } else {
                     response = await axios.post(`${FASTAPI_URL}/webhook/message`, {
@@ -133,24 +200,35 @@ async function connectWhatsApp() {
                     });
 
                     const { text_reply, audio_path: reply_audio } = response.data;
+                    console.log(`Backend response: text_reply="${text_reply}", audio_path="${reply_audio}"`);
 
                     if (text_reply) {
-                        await sendText(sock, phone, text_reply);
+                        console.log(`Attempting to send text to ${senderJid}...`);
+                        await sendText(sock, senderJid, text_reply);
+                        console.log(`Successfully sent text to ${senderJid}`);
                     }
 
                     if (reply_audio) {
-                        await sendAudio(sock, phone, reply_audio);
+                        console.log(`Attempting to send audio to ${senderJid}...`);
+                        await sendAudio(sock, senderJid, reply_audio);
+                        console.log(`Successfully sent audio to ${senderJid}`);
                     }
                 }
             } catch (err) {
-                console.error('Error processing message:', err.message);
+                const errDetail = err.response
+                    ? `HTTP ${err.response.status}: ${JSON.stringify(err.response.data)}`
+                    : err.code
+                        ? `${err.code} - ${err.message || 'Connection failed'}`
+                        : err.message || String(err);
+                console.error('Error processing message:', errDetail);
                 try {
-                    await sendText(sock, phone, "I'm having trouble right now. Please try again in a moment.");
+                    await sendText(sock, senderJid, "I'm having trouble right now. Please try again in a moment.");
                 } catch (sendErr) {
                     console.error('Failed to send error message:', sendErr.message);
                 }
             }
         });
+
     } catch (err) {
         console.error('Failed to connect:', err.message);
         isReconnecting = false;
@@ -158,6 +236,13 @@ async function connectWhatsApp() {
         setTimeout(() => connectWhatsApp(), 10000);
     }
 }
+
+process.on('unhandledRejection', (reason) => {
+    const str = String(reason);
+    if (str.includes('Bad MAC') || str.includes('MessageCounterError')) {
+        recordDecryptionFail();
+    }
+});
 
 const app = express();
 app.use(express.json());
@@ -168,6 +253,7 @@ app.get('/status', (req, res) => {
         status: connectionStatus,
         qr: latestQr,
         auth_folder: AUTH_FOLDER,
+        decryption_fails: decryptionFails.length,
     });
 });
 
@@ -202,6 +288,11 @@ app.post('/send/buttons', async (req, res) => {
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
+});
+
+app.post('/reset-session', async (req, res) => {
+    await deleteAuthAndReconnect('Manual reset via API');
+    res.json({ message: 'Session reset initiated', status: connectionStatus });
 });
 
 const PORT = process.env.BOT_PORT || 3001;

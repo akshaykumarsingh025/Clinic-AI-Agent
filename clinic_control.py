@@ -44,7 +44,8 @@ FIELD_ORDER = [
     "VOICECLONE_LANGUAGE",
     "VOICECLONE_REF_TEXT",
     "EXPORT_DIR",
-    "GOOGLE_SHEET_URL",
+    "GOOGLE_SHEET_ID",
+    "GOOGLE_SHEET_GID",
     "GOOGLE_SERVICE_ACCOUNT_JSON",
 ]
 
@@ -73,7 +74,8 @@ DEFAULTS = {
     "VOICECLONE_LANGUAGE": "auto",
     "VOICECLONE_REF_TEXT": "",
     "EXPORT_DIR": "./exports",
-    "GOOGLE_SHEET_URL": "",
+    "GOOGLE_SHEET_ID": "",
+    "GOOGLE_SHEET_GID": "759128510",
     "GOOGLE_SERVICE_ACCOUNT_JSON": "",
 }
 
@@ -268,8 +270,9 @@ class ClinicControlApp(Tk):
         sheets.grid(row=3, column=0, sticky="ew", pady=8)
         sheets.columnconfigure(1, weight=1)
         self._setting_row(sheets, 0, "EXPORT_DIR", "Excel export folder", browse="dir")
-        self._setting_row(sheets, 1, "GOOGLE_SHEET_URL", "Google Sheet URL")
-        self._setting_row(sheets, 2, "GOOGLE_SERVICE_ACCOUNT_JSON", "Service account JSON", browse="file")
+        self._setting_row(sheets, 1, "GOOGLE_SHEET_ID", "Google Sheet ID")
+        self._setting_row(sheets, 2, "GOOGLE_SHEET_GID", "Worksheet GID")
+        self._setting_row(sheets, 3, "GOOGLE_SERVICE_ACCOUNT_JSON", "Service account JSON", browse="file")
 
         actions = ttk.Frame(outer)
         actions.grid(row=4, column=0, sticky="ew", pady=10)
@@ -555,16 +558,16 @@ class ClinicControlApp(Tk):
 
     def sync_google_sheet(self):
         values = self._collect_settings()
-        sheet_url = values.get("GOOGLE_SHEET_URL", "")
+        sheet_id = values.get("GOOGLE_SHEET_ID", "")
         credentials = values.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
-        if not sheet_url or not credentials:
-            messagebox.showwarning("Google Sheet", "Please enter the Google Sheet URL and service account JSON path.")
+        if not sheet_id or not credentials:
+            messagebox.showwarning("Google Sheet", "Please enter the Google Sheet ID and service account JSON path.")
             return
 
         def worker():
             try:
                 from backend.integrations import sync_appointments_to_google_sheet
-                result = sync_appointments_to_google_sheet(sheet_url, credentials)
+                result = sync_appointments_to_google_sheet(sheet_id, credentials)
                 self._log(f"Google Sheet synced: {result}")
                 self._info("Google Sheet", f"Synced {result['rows_synced']} appointments.")
             except Exception as exc:

@@ -28,7 +28,7 @@ from backend.database import (
 )
 from backend.models import WebhookMessage, ButtonReply, BlockSlotRequest, GoogleSheetSyncRequest
 from backend.agent import get_ai_response
-from backend.integrations import export_appointments_xlsx, sync_appointments_to_google_sheet
+from backend.integrations import export_appointments_xlsx, sync_appointments_to_google_sheet, sync_appointment_to_google_calendar
 from backend.nlu import (
     appointment_scope_reply,
     clean_patient_reply,
@@ -100,10 +100,19 @@ user_locks = defaultdict(asyncio.Lock)
 def _sync_sheet_background():
     """Run Google Sheet sync in a thread — never block the webhook."""
     try:
-        if settings.GOOGLE_SHEET_URL and settings.GOOGLE_SERVICE_ACCOUNT_JSON:
+        if settings.GOOGLE_SHEET_ID and settings.GOOGLE_SERVICE_ACCOUNT_JSON:
             sync_appointments_to_google_sheet()
     except Exception as exc:
         logger.warning(f"Google Sheet sync failed: {exc}")
+
+
+def _sync_calendar_background(appointment):
+    """Run Google Calendar sync in a thread."""
+    try:
+        if settings.GOOGLE_SERVICE_ACCOUNT_JSON:
+            sync_appointment_to_google_calendar(appointment)
+    except Exception as exc:
+        logger.warning(f"Google Calendar sync failed: {exc}")
 
 
 @app.post("/webhook/message")
@@ -174,6 +183,12 @@ async def handle_message(payload: WebhookMessage):
         patient_age = ai_result.get("patient_age")
         id_card = ai_result.get("id_card")
         patient_details = ai_result.get("patient_details")
+        contact_number = ai_result.get("contact_number")
+
+        if contact_number:
+            if not patient_details:
+                patient_details = {}
+            patient_details["contact_number"] = contact_number
 
         # Use stored name if AI didn't extract one
         if not patient_name and patient_record and patient_record.get("name"):
@@ -223,6 +238,8 @@ async def handle_message(payload: WebhookMessage):
 
                         # Background Google Sheet sync
                         asyncio.get_event_loop().run_in_executor(None, _sync_sheet_background)
+                        # Background Google Calendar sync
+                        asyncio.get_event_loop().run_in_executor(None, _sync_calendar_background, appointment)
 
                     except Exception as e:
                         logger.error(f"Booking failed for {phone}: {e}")
@@ -295,6 +312,7 @@ async def handle_message(payload: WebhookMessage):
             except Exception:
                 audio_reply_path = None
 
+        logger.info(f"Final reply for {phone}: text_reply='{reply_text}', audio_path='{audio_reply_path}'")
         return {"text_reply": reply_text, "audio_path": audio_reply_path}
 
 
@@ -393,7 +411,7 @@ async def export_appointments_excel():
 @app.post("/integrations/google-sheets/sync")
 async def sync_google_sheet(payload: GoogleSheetSyncRequest):
     try:
-        return sync_appointments_to_google_sheet(payload.sheet_url, payload.credentials_path)
+        return sync_appointments_to_google_sheet(payload.sheet_id, payload.credentials_path, payload.worksheet_gid)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

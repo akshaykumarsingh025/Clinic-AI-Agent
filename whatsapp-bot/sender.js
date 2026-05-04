@@ -1,12 +1,15 @@
+function toJid(phone) {
+    if (phone.includes('@')) return phone;
+    if (phone.length > 15 && !phone.startsWith('+')) return `${phone}@lid`;
+    return `${phone}@s.whatsapp.net`;
+}
+
 async function sendText(sock, phone, text) {
-    const jid = phone.includes('@') ? phone : `${phone}@s.whatsapp.net`;
-    await sock.sendMessage(jid, { text: text });
+    await sock.sendMessage(toJid(phone), { text: text });
 }
 
 async function sendAudio(sock, phone, audioPath) {
-    const jid = phone.includes('@') ? phone : `${phone}@s.whatsapp.net`;
     const fs = require('fs');
-    const path = require('path');
 
     if (!fs.existsSync(audioPath)) {
         throw new Error(`Audio file not found: ${audioPath}`);
@@ -14,7 +17,7 @@ async function sendAudio(sock, phone, audioPath) {
 
     const audioBuffer = fs.readFileSync(audioPath);
 
-    await sock.sendMessage(jid, {
+    await sock.sendMessage(toJid(phone), {
         audio: audioBuffer,
         mimetype: 'audio/wav',
         ptt: true,
@@ -22,8 +25,6 @@ async function sendAudio(sock, phone, audioPath) {
 }
 
 async function sendButtons(sock, phone, text, buttons) {
-    const jid = phone.includes('@') ? phone : `${phone}@s.whatsapp.net`;
-
     const buttonParams = buttons.map((label, index) => ({
         buttonId: `btn_${index + 1}`,
         buttonText: { displayText: label },
@@ -36,7 +37,7 @@ async function sendButtons(sock, phone, text, buttons) {
         headerType: 1,
     };
 
-    await sock.sendMessage(jid, buttonMessage);
+    await sock.sendMessage(toJid(phone), buttonMessage);
 }
 
 module.exports = { sendText, sendAudio, sendButtons };

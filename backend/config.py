@@ -1,7 +1,9 @@
 import os
+from pathlib import Path
 from dotenv import load_dotenv, set_key
 
 load_dotenv()
+load_dotenv(Path(__file__).parent.parent / "googlekey" / ".env")
 
 ENV_FILE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
 
@@ -11,7 +13,7 @@ class Settings:
         self.CLINIC_NAME: str = os.getenv("CLINIC_NAME", "Dr. Deepika Singh Clinic")
         self.DOCTOR_NAME: str = os.getenv("DOCTOR_NAME", "Dr. Deepika Singh")
         self.CLINIC_SPECIALTY: str = os.getenv("CLINIC_SPECIALTY", "Gynecologist")
-        self.CLINIC_ADDRESS: str = os.getenv("CLINIC_ADDRESS", "South Delhi")
+        self.CLINIC_ADDRESS: str = os.getenv("CLINIC_ADDRESS", "F-11, South Extension Part 1 New Delhi, 110049")
         self.CLINIC_PHONE: str = os.getenv("CLINIC_PHONE", "+91XXXXXXXXXX")
         self.APPOINTMENT_FEE: str = os.getenv("APPOINTMENT_FEE", "Please confirm with the clinic")
         self.CLINIC_TIMEZONE: str = os.getenv("CLINIC_TIMEZONE", "Asia/Kolkata")
@@ -43,8 +45,10 @@ class Settings:
 
         self.DB_PATH: str = os.getenv("DB_PATH", "./database/clinic.db")
         self.EXPORT_DIR: str = os.getenv("EXPORT_DIR", "./exports")
-        self.GOOGLE_SHEET_URL: str = os.getenv("GOOGLE_SHEET_URL", "")
-        self.GOOGLE_SERVICE_ACCOUNT_JSON: str = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+        self.GOOGLE_SHEET_ID: str = os.getenv("GOOGLE_SHEET_ID", "")
+        self.GOOGLE_SHEET_GID: int = int(os.getenv("GOOGLE_SHEET_GID", "759128510")) if os.getenv("GOOGLE_SHEET_GID") else None
+        self.GOOGLE_SERVICE_ACCOUNT_JSON: str = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "") or str(Path(__file__).parent.parent / "googlekey" / "service_account.json")
+        self.GOOGLE_CALENDAR_ID: str = os.getenv("GOOGLE_CALENDAR_ID", "primary")
 
     @property
     def WORKING_DAY_INDICES(self) -> set[int]:

@@ -57,5 +57,6 @@ class AIResponse(BaseModel):
 
 
 class GoogleSheetSyncRequest(BaseModel):
-    sheet_url: Optional[str] = None
+    sheet_id: Optional[str] = None
     credentials_path: Optional[str] = None
+    worksheet_gid: Optional[int] = None

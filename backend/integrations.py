@@ -1,10 +1,13 @@
 import os
-from datetime import datetime
+import logging
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
 from backend.config import settings
 from backend.database import get_all_appointments, init_db
+
+logger = logging.getLogger(__name__)
 
 
 BOOKING_COLUMNS = [
@@ -102,14 +105,15 @@ def export_appointments_xlsx(output_path: Optional[str] = None) -> str:
 
 
 def sync_appointments_to_google_sheet(
-    sheet_url: Optional[str] = None,
+    sheet_id: Optional[str] = None,
     credentials_path: Optional[str] = None,
+    worksheet_gid: Optional[int] = None,
 ) -> dict:
-    sheet_url = sheet_url or settings.GOOGLE_SHEET_URL
+    sheet_id = sheet_id or settings.GOOGLE_SHEET_ID
     credentials_path = credentials_path or settings.GOOGLE_SERVICE_ACCOUNT_JSON
 
-    if not sheet_url:
-        raise ValueError("Google Sheet URL is missing.")
+    if not sheet_id:
+        raise ValueError("Google Sheet ID is missing.")
     if not credentials_path:
         raise ValueError("Google service account JSON path is missing.")
     if not os.path.exists(credentials_path):
@@ -121,35 +125,66 @@ def sync_appointments_to_google_sheet(
         raise RuntimeError("gspread and google-auth are required. Run: pip install -r requirements.txt") from exc
 
     client = gspread.service_account(filename=credentials_path)
-    spreadsheet = client.open_by_url(sheet_url)
-    worksheet = spreadsheet.sheet1  # Use the first worksheet
+    spreadsheet = client.open_by_key(sheet_id)
 
-    # Get existing phone+date+time combos to avoid duplicates
+    gid = worksheet_gid or settings.GOOGLE_SHEET_GID
+    if gid is not None:
+        worksheet = spreadsheet.get_worksheet_by_id(gid)
+    else:
+        worksheet = spreadsheet.sheet1
+
+    if worksheet is None:
+        worksheet = spreadsheet.sheet1
+
     existing_rows = worksheet.get_all_values()
     existing_keys = set()
-    for row in existing_rows[1:]:  # skip header
+    for row in existing_rows[1:]:
         if len(row) >= 5:
-            existing_keys.add((row[1], row[3], row[4]))  # (Phone, Date, Time)
+            existing_keys.add((row[1], row[3], row[4]))
 
-    # Map our appointments to the user's column format:
-    # Name | Phone Number | Email | Date | Time | Reason | Coupon Code | Submitted At | Calendar Status | WhatsApp
+    status_map = {
+        "booked": "Created",
+        "confirmed": "Confirmed",
+        "cancelled": "Cancelled",
+        "rescheduled": "Rescheduled",
+        "no_show": "No Show",
+        "checked_in": "Checked In",
+    }
+
     init_db()
     new_rows = []
     for appt in get_all_appointments():
         key = (_stringify(appt.get("phone")), _stringify(appt.get("date")), _stringify(appt.get("time")))
         if key in existing_keys:
             continue
+
+        contact_number = ""
+        details_json = appt.get("details_json")
+        if details_json:
+            try:
+                import json
+                parsed = json.loads(details_json)
+                contact_number = parsed.get("contact_number", "")
+            except Exception:
+                pass
+
+        display_phone = contact_number if contact_number else _stringify(appt.get("phone"))
+
+        raw_status = _stringify(appt.get("status"))
+        calendar_status = status_map.get(raw_status, raw_status)
+
         new_rows.append([
             _stringify(appt.get("patient_name")),
-            _stringify(appt.get("phone")),
-            "",  # Email — not collected via WhatsApp
+            display_phone,
+            "",
             _stringify(appt.get("date")),
             _stringify(appt.get("time")),
             _stringify(appt.get("reason")),
-            "",  # Coupon Code — not applicable
+            "",
             _stringify(appt.get("created_at")),
-            _stringify(appt.get("status")),
+            calendar_status,
             "WhatsApp",
+            _stringify(appt.get("id_card")),
         ])
 
     if new_rows:
@@ -160,4 +195,80 @@ def sync_appointments_to_google_sheet(
         "worksheet": worksheet.title,
         "rows_synced": len(new_rows),
     }
+
+
+def sync_appointment_to_google_calendar(appointment: dict) -> dict:
+    calendar_id = settings.GOOGLE_CALENDAR_ID
+    credentials_path = settings.GOOGLE_SERVICE_ACCOUNT_JSON
+
+    if not calendar_id or calendar_id == "primary":
+        calendar_id = "primary"
+
+    if not credentials_path or not os.path.exists(credentials_path):
+        logger.warning("Google Calendar Sync: Credentials not found.")
+        return {}
+
+    try:
+        from google.oauth2 import service_account
+        from googleapiclient.discovery import build
+    except ImportError as exc:
+        logger.error("google-api-python-client is required. Run: pip install -r requirements.txt")
+        return {}
+
+    SCOPES = ['https://www.googleapis.com/auth/calendar.events']
+    
+    try:
+        creds = service_account.Credentials.from_service_account_file(
+            credentials_path, scopes=SCOPES)
+        service = build('calendar', 'v3', credentials=creds)
+
+        date_str = appointment.get("date")
+        time_str = appointment.get("time")
+        
+        # Calculate start and end times
+        start_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+        end_dt = start_dt + timedelta(minutes=settings.SLOT_DURATION_MINUTES)
+
+        timezone = settings.CLINIC_TIMEZONE
+        
+        name = appointment.get("patient_name", "Patient")
+        reason = appointment.get("reason", "No reason provided")
+
+        contact_number = ""
+        details_json = appointment.get("details_json")
+        if details_json:
+            try:
+                import json
+                parsed = json.loads(details_json)
+                contact_number = parsed.get("contact_number", "")
+            except:
+                pass
+
+        display_phone = contact_number if contact_number else appointment.get("phone", "")
+
+        event = {
+            'summary': f'Appointment: {name}',
+            'description': f'Phone: {display_phone}\nReason: {reason}',
+            'start': {
+                'dateTime': start_dt.isoformat(),
+                'timeZone': timezone,
+            },
+            'end': {
+                'dateTime': end_dt.isoformat(),
+                'timeZone': timezone,
+            },
+        }
+
+        event_result = service.events().insert(calendarId=calendar_id, body=event).execute()
+        
+        logger.info(f"Successfully synced appointment {appointment.get('id')} to Google Calendar.")
+        return {
+            "status": "success",
+            "event_link": event_result.get('htmlLink'),
+            "event_id": event_result.get('id')
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to sync appointment to Google Calendar: {e}")
+        return {"status": "error", "message": str(e)}
 

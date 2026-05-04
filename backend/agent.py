@@ -59,10 +59,10 @@ DATE/TIME RULES:
 - Don't book past dates or times
 
 BOOKING FLOW:
-- Phone number: NEVER ask — you already have it from WhatsApp
+- Phone number: The patient's WhatsApp ID is '{whatsapp_id}'. If this looks like a long masked anonymous ID (e.g. 13+ digits like '134076145090595'), you MUST politely ask the patient to provide their actual 10-digit contact number. If it already looks like a normal phone number, do NOT ask for it.
 - Name: If you already know it (see patient context above), use it and don't ask again
 - What you need: name (if new patient), reason/problem, date and time
-- ID card: Ask once, only if not already stored
+- ID card: Ask once, only if not already stored. Ask ONLY for their Aadhaar or Driving Licence number. Explicitly tell the patient "number only, no images or photos".
 - If patient gives everything in one message, book immediately — don't ask again
 - If anything is missing, ask naturally in conversation
 - IMPORTANT: Once booking starts, keep intent as BOOK until done. Don't switch to RESCHEDULE unless they explicitly want to change an EXISTING appointment.
@@ -90,6 +90,7 @@ Respond ONLY in this JSON (no markdown, no extra text):
   "reason": "string or null",
   "patient_age": "string or null",
   "id_card": "string or null",
+  "contact_number": "string or null",
   "patient_details": {{"any_extra_detail": "string"}} or null,
   "needs_more_info": true or false,
   "booking_ready": true or false,
@@ -133,6 +134,7 @@ def _build_patient_context(
 
 
 def _build_system_prompt(
+    phone: str,
     patient_record: Optional[dict] = None,
     active_appointments: Optional[list[dict]] = None,
 ) -> str:
@@ -147,6 +149,7 @@ def _build_system_prompt(
         current_datetime=now,
         slot_duration=settings.SLOT_DURATION_MINUTES,
         patient_context=patient_ctx,
+        whatsapp_id=phone,
     )
 
 
@@ -185,7 +188,7 @@ async def get_ai_response(
     detected_time = parse_time_from_text(user_message)
     history = get_conversation_history(phone, limit=10)
 
-    system_prompt = _build_system_prompt(patient_record, active_appointments)
+    system_prompt = _build_system_prompt(phone, patient_record, active_appointments)
     messages = [{"role": "system", "content": system_prompt}]
 
     slots_context = _get_slots_context(detected_date)
@@ -264,6 +267,7 @@ def _parse_ai_response(raw: str) -> dict:
                     "reason": data.get("reason"),
                     "patient_age": data.get("patient_age"),
                     "id_card": data.get("id_card"),
+                    "contact_number": data.get("contact_number"),
                     "patient_details": data.get("patient_details"),
                     "needs_more_info": data.get("needs_more_info", True),
                     "booking_ready": data.get("booking_ready", False),
@@ -283,6 +287,7 @@ def _parse_ai_response(raw: str) -> dict:
         "reason": None,
         "patient_age": None,
         "id_card": None,
+        "contact_number": None,
         "patient_details": None,
         "needs_more_info": True,
         "booking_ready": False,
