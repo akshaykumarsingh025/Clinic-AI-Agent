@@ -9,6 +9,8 @@ const { sendText, sendAudio, sendButtons } = require('./sender');
 
 const FASTAPI_URL = process.env.FASTAPI_URL || 'http://localhost:8000';
 const AUTH_FOLDER = process.env.WHATSAPP_AUTH_FOLDER || path.join(__dirname, 'auth_info');
+const KEEPALIVE_PHONE = process.env.KEEPALIVE_PHONE || '919871208803';
+const KEEPALIVE_INTERVAL_MS = parseInt(process.env.KEEPALIVE_INTERVAL_MS) || 30 * 60 * 1000;
 const MAX_DECRYPTION_FAILS = 5;
 const DECRYPTION_FAIL_WINDOW_MS = 60000;
 
@@ -18,6 +20,7 @@ let latestQr = null;
 let connectionStatus = 'starting';
 let decryptionFails = [];
 let decryptionResetting = false;
+let keepaliveTimer = null;
 
 function getStatusCode(error) {
     if (!error) return null;
@@ -35,6 +38,29 @@ function recordDecryptionFail() {
 
     if (decryptionFails.length >= MAX_DECRYPTION_FAILS) {
         deleteAuthAndReconnect(`${MAX_DECRYPTION_FAILS} decryption errors in ${DECRYPTION_FAIL_WINDOW_MS / 1000}s`);
+    }
+}
+
+function startKeepalive() {
+    stopKeepalive();
+    if (!KEEPALIVE_PHONE) return;
+    console.log(`[keepalive] Will ping ${KEEPALIVE_PHONE} every ${KEEPALIVE_INTERVAL_MS / 1000}s`);
+    keepaliveTimer = setInterval(async () => {
+        if (!currentSock || connectionStatus !== 'open') return;
+        try {
+            const jid = KEEPALIVE_PHONE.includes('@') ? KEEPALIVE_PHONE : `${KEEPALIVE_PHONE}@s.whatsapp.net`;
+            await currentSock.sendPresenceUpdate('available', jid);
+            console.log(`[keepalive] Presence ping sent at ${new Date().toLocaleTimeString()}`);
+        } catch (err) {
+            console.error('[keepalive] Ping failed:', err.message);
+        }
+    }, KEEPALIVE_INTERVAL_MS);
+}
+
+function stopKeepalive() {
+    if (keepaliveTimer) {
+        clearInterval(keepaliveTimer);
+        keepaliveTimer = null;
     }
 }
 
@@ -121,6 +147,7 @@ async function connectWhatsApp() {
             if (connection === 'close') {
                 currentSock = null;
                 connectionStatus = 'closed';
+                stopKeepalive();
                 const statusCode = getStatusCode(lastDisconnect?.error);
                 const loggedOut = statusCode === DisconnectReason.loggedOut;
                 console.log('Connection closed. Logged out:', loggedOut, '| Status:', statusCode);
@@ -138,12 +165,15 @@ async function connectWhatsApp() {
                 latestQr = null;
                 connectionStatus = 'open';
                 decryptionFails = [];
+                startKeepalive();
                 console.log('WhatsApp bot connected!');
             }
         });
 
-        sock.ev.on('messages.upsert', async ({ messages }) => {
+        sock.ev.on('messages.upsert', async ({ messages, type }) => {
             const msg = messages[0];
+            console.log(`[whatsapp] Message upsert: type=${type}, fromMe=${msg.key?.fromMe}, remoteJid=${msg.key?.remoteJid}, hasMessage=${!!msg.message}`);
+
             if (!msg.key || msg.key.fromMe) return;
             if (!msg.message) return;
 
@@ -154,6 +184,7 @@ async function connectWhatsApp() {
 
             let messageText = '';
             let audioPath = null;
+            let imagePath = null;
 
             if (msg.message.conversation) {
                 messageText = msg.message.conversation;
@@ -177,7 +208,27 @@ async function connectWhatsApp() {
                 }
             }
 
-            if (!messageText && !audioPath) return;
+            const imageMsg = msg.message.imageMessage;
+            if (imageMsg) {
+                try {
+                    imagePath = await downloadMedia(sock, msg);
+                    console.log(`Image downloaded: ${imagePath}`);
+                } catch (err) {
+                    console.error('Failed to download image:', err);
+                }
+            }
+
+            if (!messageText && !audioPath && !imagePath) {
+                console.log(`[whatsapp] No text/audio/image extracted from message. Message keys: ${Object.keys(msg.message || {}).join(', ')}`);
+                return;
+            }
+
+            console.log(`[whatsapp] Processing message from ${phone}: "${messageText}"`);
+
+            // Send typing indicator
+            try {
+                await sock.sendPresenceUpdate('composing', senderJid);
+            } catch (e) { }
 
             try {
                 const isButtonReply = !audioPath && /^\d$/.test(messageText.trim());
@@ -190,6 +241,7 @@ async function connectWhatsApp() {
                     });
                     const reply = response.data.reply;
                     if (reply) {
+                        await sock.sendPresenceUpdate('paused', senderJid).catch(() => {});
                         await sendText(sock, senderJid, reply);
                     }
                 } else {
@@ -197,6 +249,7 @@ async function connectWhatsApp() {
                         phone: phone,
                         message_text: messageText || null,
                         audio_path: audioPath,
+                        image_path: imagePath,
                     });
 
                     const { text_reply, audio_path: reply_audio } = response.data;
@@ -204,12 +257,14 @@ async function connectWhatsApp() {
 
                     if (text_reply) {
                         console.log(`Attempting to send text to ${senderJid}...`);
+                        await sock.sendPresenceUpdate('paused', senderJid).catch(() => {});
                         await sendText(sock, senderJid, text_reply);
                         console.log(`Successfully sent text to ${senderJid}`);
                     }
 
                     if (reply_audio) {
                         console.log(`Attempting to send audio to ${senderJid}...`);
+                        await sock.sendPresenceUpdate('paused', senderJid).catch(() => {});
                         await sendAudio(sock, senderJid, reply_audio);
                         console.log(`Successfully sent audio to ${senderJid}`);
                     }
@@ -261,7 +316,11 @@ app.post('/send/text', async (req, res) => {
     try {
         const { phone, text } = req.body;
         if (!currentSock) return res.status(503).json({ error: 'WhatsApp not connected' });
+        const jid = phone.includes('@') ? phone : (phone.length > 15 && !phone.startsWith('+') ? `${phone}@lid` : `${phone}@s.whatsapp.net`);
+        try { await currentSock.sendPresenceUpdate('composing', jid); } catch (e) {}
+        await new Promise(r => setTimeout(r, 800));
         await sendText(currentSock, phone, text);
+        try { await currentSock.sendPresenceUpdate('paused', jid); } catch (e) {}
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -272,7 +331,11 @@ app.post('/send/audio', async (req, res) => {
     try {
         const { phone, audio_path } = req.body;
         if (!currentSock) return res.status(503).json({ error: 'WhatsApp not connected' });
+        const jid = phone.includes('@') ? phone : (phone.length > 15 && !phone.startsWith('+') ? `${phone}@lid` : `${phone}@s.whatsapp.net`);
+        try { await currentSock.sendPresenceUpdate('composing', jid); } catch (e) {}
+        await new Promise(r => setTimeout(r, 500));
         await sendAudio(currentSock, phone, audio_path);
+        try { await currentSock.sendPresenceUpdate('paused', jid); } catch (e) {}
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: err.message });

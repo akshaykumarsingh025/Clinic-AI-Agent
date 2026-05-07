@@ -7,6 +7,7 @@ class WebhookMessage(BaseModel):
     phone: str
     message_text: Optional[str] = None
     audio_path: Optional[str] = None
+    image_path: Optional[str] = None
 
 
 class ButtonReply(BaseModel):

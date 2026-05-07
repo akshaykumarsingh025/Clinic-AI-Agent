@@ -95,9 +95,11 @@ def init_db():
     _ensure_column(conn, "patients", "age", "TEXT")
     _ensure_column(conn, "patients", "id_card", "TEXT")
     _ensure_column(conn, "patients", "extra_details_json", "TEXT")
+    _ensure_column(conn, "patients", "id_card_image_path", "TEXT")
     _ensure_column(conn, "appointments", "patient_age", "TEXT")
     _ensure_column(conn, "appointments", "id_card", "TEXT")
     _ensure_column(conn, "appointments", "details_json", "TEXT")
+    _ensure_column(conn, "appointments", "id_card_image_path", "TEXT")
 
     conn.commit()
     conn.close()
@@ -118,11 +120,12 @@ def create_patient(
     age: Optional[str] = None,
     id_card: Optional[str] = None,
     extra_details: Any = None,
+    id_card_image_path: Optional[str] = None,
 ) -> dict:
     conn = get_db()
     cursor = conn.execute(
-        "INSERT OR IGNORE INTO patients (phone, name, age, id_card, extra_details_json) VALUES (?, ?, ?, ?, ?)",
-        (phone, name, age, id_card, _json_or_none(extra_details)),
+        "INSERT OR IGNORE INTO patients (phone, name, age, id_card, extra_details_json, id_card_image_path) VALUES (?, ?, ?, ?, ?, ?)",
+        (phone, name, age, id_card, _json_or_none(extra_details), id_card_image_path),
     )
     if name:
         conn.execute("UPDATE patients SET name = ? WHERE phone = ? AND (name IS NULL OR name = '')", (name, phone))
@@ -130,6 +133,8 @@ def create_patient(
         conn.execute("UPDATE patients SET age = ? WHERE phone = ? AND (age IS NULL OR age = '')", (age, phone))
     if id_card:
         conn.execute("UPDATE patients SET id_card = ? WHERE phone = ? AND (id_card IS NULL OR id_card = '')", (id_card, phone))
+    if id_card_image_path:
+        conn.execute("UPDATE patients SET id_card_image_path = ? WHERE phone = ? AND (id_card_image_path IS NULL OR id_card_image_path = '')", (id_card_image_path, phone))
     if extra_details:
         conn.execute(
             "UPDATE patients SET extra_details_json = COALESCE(extra_details_json, ?) WHERE phone = ?",
@@ -180,11 +185,12 @@ def create_appointment(
     patient_age: Optional[str] = None,
     id_card: Optional[str] = None,
     details: Any = None,
+    id_card_image_path: Optional[str] = None,
 ) -> int:
     conn = get_db()
     patient = get_patient(phone)
     if not patient:
-        create_patient(phone, name, patient_age, id_card, details)
+        create_patient(phone, name, patient_age, id_card, details, id_card_image_path)
     else:
         if name and (not patient.get("name") or patient["name"] == ""):
             conn.execute("UPDATE patients SET name = ? WHERE phone = ?", (name, phone))
@@ -192,6 +198,8 @@ def create_appointment(
             conn.execute("UPDATE patients SET age = ? WHERE phone = ?", (patient_age, phone))
         if id_card and (not patient.get("id_card") or patient["id_card"] == ""):
             conn.execute("UPDATE patients SET id_card = ? WHERE phone = ?", (id_card, phone))
+        if id_card_image_path and (not patient.get("id_card_image_path") or patient["id_card_image_path"] == ""):
+            conn.execute("UPDATE patients SET id_card_image_path = ? WHERE phone = ?", (id_card_image_path, phone))
         if details and (not patient.get("extra_details_json") or patient["extra_details_json"] == ""):
             conn.execute("UPDATE patients SET extra_details_json = ? WHERE phone = ?", (_json_or_none(details), phone))
 
@@ -201,10 +209,10 @@ def create_appointment(
     cursor = conn.execute(
         """
         INSERT INTO appointments
-        (patient_id, phone, patient_name, date, time, reason, patient_age, id_card, details_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (patient_id, phone, patient_name, date, time, reason, patient_age, id_card, details_json, id_card_image_path)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (patient_id, phone, name, date, time, reason, patient_age, id_card, _json_or_none(details)),
+        (patient_id, phone, name, date, time, reason, patient_age, id_card, _json_or_none(details), id_card_image_path),
     )
     appointment_id = cursor.lastrowid
     conn.commit()

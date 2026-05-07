@@ -122,7 +122,13 @@ async def handle_message(payload: WebhookMessage):
     async with user_locks[phone]:
         user_message = payload.message_text or ""
         audio_path = payload.audio_path
+        image_path = payload.image_path
         incoming_audio = bool(audio_path)
+        incoming_image = bool(image_path)
+
+        if incoming_image and image_path and os.path.exists(image_path):
+            user_message = "[Patient sent an image — likely an ID card photo]" if not user_message.strip() else user_message
+            logger.info(f"Image received from {phone}: {image_path}")
 
         audio_lang_hint = None
         if audio_path and os.path.exists(audio_path):
@@ -133,7 +139,7 @@ async def handle_message(payload: WebhookMessage):
                 logger.error(f"STT failed for {phone}: {e}")
                 return {"text_reply": "Sorry, I couldn't understand the voice note. Could you please type your message?", "audio_path": None}
 
-        if not user_message.strip():
+        if not user_message.strip() and not incoming_image:
             return {"text_reply": "Hi! How can I help you today?", "audio_path": None}
 
         language = detect_language(user_message)
@@ -155,6 +161,10 @@ async def handle_message(payload: WebhookMessage):
             a for a in get_patient_appointments(phone)
             if a["status"] in ("booked", "confirmed")
         ]
+        no_show_appts = [
+            a for a in get_patient_appointments(phone)
+            if a["status"] == "no_show"
+        ]
 
         detected_date = parse_date_from_text(user_message)
         detected_time = parse_time_from_text(user_message)
@@ -164,6 +174,7 @@ async def handle_message(payload: WebhookMessage):
                 phone, user_message, detected_date,
                 patient_record=patient_record,
                 active_appointments=active_appts,
+                no_show_appointments=no_show_appts,
             )
         except Exception as e:
             logger.error(f"AI response failed for {phone}: {e}")
@@ -182,8 +193,15 @@ async def handle_message(payload: WebhookMessage):
         reason = ai_result.get("reason")
         patient_age = ai_result.get("patient_age")
         id_card = ai_result.get("id_card")
+        id_card_image_flag = ai_result.get("id_card_image", False)
         patient_details = ai_result.get("patient_details")
         contact_number = ai_result.get("contact_number")
+
+        id_card_image_path = None
+        if incoming_image and image_path:
+            id_card_image_path = image_path
+            if not id_card:
+                id_card = "image_on_file"
 
         if contact_number:
             if not patient_details:
@@ -230,6 +248,7 @@ async def handle_message(payload: WebhookMessage):
                         appointment = book_appointment(
                             phone, name, date_str, time_str, reason,
                             patient_age=patient_age, id_card=id_card, details=patient_details,
+                            id_card_image_path=id_card_image_path,
                         )
                         reply_text = format_appointment_confirmation(appointment)
                         schedule_appointment_reminders(appointment)
@@ -275,6 +294,13 @@ async def handle_message(payload: WebhookMessage):
                 reply_text = (
                     f"Sure! Your current appointment is on {appt['date']} at {appt['time']}. "
                     f"What new date and time would you like?"
+                )
+            elif no_show_appts:
+                old = no_show_appts[-1]
+                update_appointment_status(old["id"], "cancelled")
+                reply_text = (
+                    "I see you had a missed appointment. Let me help you book a fresh one! "
+                    "What date and time works for you?"
                 )
             else:
                 reply_text = "You don't have any active appointments to reschedule. Would you like to book a new one?"
@@ -327,26 +353,29 @@ async def handle_button_reply(payload: ButtonReply):
     if not response_type:
         return {"reply": "Sorry, I didn't understand that. Please reply with 1, 2, 3, or 4."}
 
-    active = [a for a in get_patient_appointments(phone) if a["status"] == "no_show" and a["followup_sent"]]
+    all_appts = get_patient_appointments(phone)
+    no_show_appts = [a for a in all_appts if a["status"] == "no_show"]
 
-    if not active:
+    if not no_show_appts:
+        if response_type == "reschedule":
+            return {"reply": "Of course! I'll help you book a new appointment. Just tell me the date and time that works for you."}
         return {"reply": "Thank you for your response. Is there anything else I can help with?"}
 
-    appt = active[-1]
-    update_followup_response(appt["id"], response_type)
+    appt = no_show_appts[-1]
+    if appt.get("followup_sent"):
+        update_followup_response(appt["id"], response_type)
 
     if response_type == "reschedule":
-        reply = "Of course! Let's find you a new slot. What date and time works for you?"
+        update_appointment_status(appt["id"], "cancelled")
+        return {"reply": "Of course! Let's find you a new slot. What date and time works for you?"}
     elif response_type == "found_doctor":
-        reply = "Glad you got the help you needed! Feel free to reach out anytime. Take care!"
+        return {"reply": "Glad you got the help you needed! Feel free to reach out anytime. Take care!"}
     elif response_type == "callback":
-        reply = f"No problem! Call us whenever you're ready at {settings.CLINIC_PHONE}."
+        return {"reply": f"No problem! Call us whenever you're ready at {settings.CLINIC_PHONE}."}
     elif response_type == "unwell":
-        reply = f"I'm sorry to hear that. Please call us at {settings.CLINIC_PHONE} for help. Wishing you a speedy recovery!"
+        return {"reply": f"I'm sorry to hear that. Please call us at {settings.CLINIC_PHONE} for help. Wishing you a speedy recovery!"}
     else:
-        reply = "Thank you for letting us know."
-
-    return {"reply": reply}
+        return {"reply": "Thank you for letting us know."}
 
 
 @app.get("/appointments/today")

@@ -28,9 +28,30 @@ async function downloadMedia(sock, msg) {
     }
 
     const timestamp = Date.now();
-    const filename = `voice_${timestamp}.ogg`;
-    const filepath = path.join(DOWNLOAD_DIR, filename);
+    let filename;
+    let mimetype = '';
 
+    const imageMsg = msg.message?.imageMessage;
+    const audioMsg = msg.message?.audioMessage || msg.message?.voiceNoteMessage?.audioMessage;
+
+    if (imageMsg) {
+        mimetype = imageMsg.mimetype || 'image/jpeg';
+        const ext = mimetype.split('/')[1] || 'jpeg';
+        filename = `id_${timestamp}.${ext}`;
+    } else if (audioMsg) {
+        mimetype = audioMsg.mimetype || 'audio/ogg';
+        filename = `voice_${timestamp}.ogg`;
+    } else {
+        filename = `media_${timestamp}`;
+    }
+
+    const subdir = imageMsg ? 'id_cards' : 'incoming';
+    const dir = path.join(DOWNLOAD_DIR, '..', subdir);
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+    }
+
+    const filepath = path.join(dir, filename);
     fs.writeFileSync(filepath, buffer);
 
     return filepath;

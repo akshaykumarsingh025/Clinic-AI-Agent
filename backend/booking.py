@@ -100,9 +100,9 @@ def book_appointment(
     patient_age: Optional[str] = None,
     id_card: Optional[str] = None,
     details: Optional[dict] = None,
+    id_card_image_path: Optional[str] = None,
 ) -> dict:
-    # Book directly without slot conflict checks — per admin preference
-    appointment_id = create_appointment(phone, name, date, time, reason, patient_age, id_card, details)
+    appointment_id = create_appointment(phone, name, date, time, reason, patient_age, id_card, details, id_card_image_path)
     appointment = get_appointment_by_id(appointment_id)
     return appointment
 

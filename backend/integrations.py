@@ -173,6 +173,15 @@ def sync_appointments_to_google_sheet(
         raw_status = _stringify(appt.get("status"))
         calendar_status = status_map.get(raw_status, raw_status)
 
+        id_card_val = _stringify(appt.get("id_card"))
+        id_card_image = appt.get("id_card_image_path")
+        if id_card_image:
+            id_card_display = "ID image on file"
+        elif id_card_val:
+            id_card_display = id_card_val
+        else:
+            id_card_display = ""
+
         new_rows.append([
             _stringify(appt.get("patient_name")),
             display_phone,
@@ -184,7 +193,7 @@ def sync_appointments_to_google_sheet(
             _stringify(appt.get("created_at")),
             calendar_status,
             "WhatsApp",
-            _stringify(appt.get("id_card")),
+            id_card_display,
         ])
 
     if new_rows:
