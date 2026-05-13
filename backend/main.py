@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from datetime import datetime
@@ -6,6 +7,7 @@ from typing import Optional
 import asyncio
 from collections import defaultdict
 import httpx
+import ollama
 from pydantic import BaseModel
 
 from fastapi import FastAPI, HTTPException
@@ -17,6 +19,9 @@ from backend.database import (
     init_db,
     get_appointments,
     update_appointment_status,
+    update_appointment_payment,
+    update_appointment_reports,
+    save_patient_document,
     get_patient,
     get_patient_appointments,
     get_no_show_stats,
@@ -55,6 +60,7 @@ from backend.scheduler import (
 )
 from backend.stt import transcribe_audio
 from backend.tts import generate_voice_reply
+from backend.image_reader import read_image_with_classification
 
 os.makedirs("./logs", exist_ok=True)
 
@@ -73,6 +79,12 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     init_db()
     logger.info("Database initialized")
+    try:
+        client = ollama.Client(host=settings.OLLAMA_HOST)
+        client.list()
+        logger.info(f"Ollama connection verified at {settings.OLLAMA_HOST}")
+    except Exception as e:
+        logger.warning(f"Ollama not reachable at {settings.OLLAMA_HOST}: {e}. AI responses will fail until Ollama is running.")
     init_scheduler()
     logger.info("Scheduler started")
     yield
@@ -126,9 +138,46 @@ async def handle_message(payload: WebhookMessage):
         incoming_audio = bool(audio_path)
         incoming_image = bool(image_path)
 
+        patient_record = get_patient(phone)
+
         if incoming_image and image_path and os.path.exists(image_path):
-            user_message = "[Patient sent an image — likely an ID card photo]" if not user_message.strip() else user_message
             logger.info(f"Image received from {phone}: {image_path}")
+            try:
+                image_data = await read_image_with_classification(image_path)
+                img_type = image_data.get("image_type", "general")
+                logger.info(f"Image classified as '{img_type}' for {phone}")
+                if image_data.get("success"):
+                    save_patient_document(phone, img_type, image_path, image_data.get("data"))
+                    img_data = image_data.get("data", {})
+                    if img_type == "payment_screenshot" and img_data.get("payment_status") == "success":
+                        active_for_payment = [a for a in get_patient_appointments(phone) if a["status"] in ("booked", "confirmed")]
+                        if active_for_payment:
+                            appt = active_for_payment[-1]
+                            update_appointment_payment(appt["id"], "paid", image_path)
+                            asyncio.get_event_loop().run_in_executor(None, _sync_sheet_background)
+                            try:
+                                from backend.whatsapp_sender import send_text as whatsapp_send_text
+                                await whatsapp_send_text(settings.DOCTOR_PHONE, f"Payment screenshot received from {patient_record.get('name', phone) if patient_record else phone}. Amount: {img_data.get('amount', 'N/A')}. Txn: {img_data.get('transaction_id', 'N/A')}")
+                            except Exception as doc_err:
+                                logger.warning(f"Failed to notify doctor about payment: {doc_err}")
+                    elif img_type == "id_card" and img_data:
+                        if not user_message.strip():
+                            user_message = f"[Patient sent ID card image - {img_data.get('id_type', 'ID')}: {img_data.get('id_number', 'N/A')}, Name: {img_data.get('name', 'N/A')}]"
+                    elif img_type in ("prescription", "report") and img_data:
+                        active_for_reports = [a for a in get_patient_appointments(phone) if a["status"] in ("booked", "confirmed")]
+                        if active_for_reports:
+                            appt = active_for_reports[-1]
+                            update_appointment_reports(appt["id"], img_data)
+                        if not user_message.strip():
+                            user_message = f"[Patient sent {img_type} image]"
+                else:
+                    img_type = "general"
+            except Exception as img_err:
+                logger.error(f"Image reading failed for {phone}: {img_err}")
+                img_type = "general"
+                image_data = None
+        else:
+            image_data = None
 
         audio_lang_hint = None
         if audio_path and os.path.exists(audio_path):
@@ -156,7 +205,6 @@ async def handle_message(payload: WebhookMessage):
             return {"text_reply": reply_text, "audio_path": audio_reply_path}
 
         # ── Returning patient context ──────────────────────────────
-        patient_record = get_patient(phone)
         active_appts = [
             a for a in get_patient_appointments(phone)
             if a["status"] in ("booked", "confirmed")
@@ -175,6 +223,7 @@ async def handle_message(payload: WebhookMessage):
                 patient_record=patient_record,
                 active_appointments=active_appts,
                 no_show_appointments=no_show_appts,
+                image_data=image_data,
             )
         except Exception as e:
             logger.error(f"AI response failed for {phone}: {e}")
@@ -186,10 +235,13 @@ async def handle_message(payload: WebhookMessage):
 
         intent = ai_result.get("intent", "UNKNOWN")
         booking_ready = ai_result.get("booking_ready", False)
+        payment_pending = ai_result.get("payment_pending", False)
         date_str = ai_result.get("date") or detected_date
         time_str = ai_result.get("time") or detected_time
         time_pref = ai_result.get("time_preference")
         patient_name = ai_result.get("patient_name")
+        patient_location = ai_result.get("patient_location")
+        consultation_type = ai_result.get("consultation_type")
         reason = ai_result.get("reason")
         patient_age = ai_result.get("patient_age")
         id_card = ai_result.get("id_card")
@@ -207,6 +259,10 @@ async def handle_message(payload: WebhookMessage):
             if not patient_details:
                 patient_details = {}
             patient_details["contact_number"] = contact_number
+
+        if patient_location and patient_record:
+            from backend.database import update_patient_location
+            update_patient_location(phone, patient_location)
 
         # Use stored name if AI didn't extract one
         if not patient_name and patient_record and patient_record.get("name"):
@@ -247,7 +303,11 @@ async def handle_message(payload: WebhookMessage):
                         name = patient_name or "Patient"
                         appointment = book_appointment(
                             phone, name, date_str, time_str, reason,
-                            patient_age=patient_age, id_card=id_card, details=patient_details,
+                            patient_age=patient_age,
+                            patient_location=patient_location,
+                            consultation_type=consultation_type,
+                            id_card=id_card,
+                            details=patient_details,
                             id_card_image_path=id_card_image_path,
                         )
                         reply_text = format_appointment_confirmation(appointment)
@@ -263,6 +323,24 @@ async def handle_message(payload: WebhookMessage):
                     except Exception as e:
                         logger.error(f"Booking failed for {phone}: {e}")
                         reply_text = "Sorry, something went wrong while booking. Please try again."
+
+        elif intent == "BOOK" and payment_pending and not booking_ready:
+            qr_path = settings.QR_CODE_PATH
+            if os.path.exists(qr_path):
+                try:
+                    from backend.whatsapp_sender import send_text as whatsapp_send_text
+                    await whatsapp_send_text(phone, "Please scan the QR code below to make the payment. After payment, send me the screenshot.")
+                except Exception as qr_err:
+                    logger.warning(f"Failed to send payment info: {qr_err}")
+            else:
+                reply_text = reply_text or "To confirm your booking, please make the payment. You can pay via UPI to +918595954097. After payment, send me the screenshot."
+
+        elif intent == "EMERGENCY":
+            try:
+                from backend.whatsapp_sender import send_text as whatsapp_send_text
+                await whatsapp_send_text(phone, f"EMERGENCY - Please call Dr. Deepika immediately: +918595954097")
+            except Exception as em_err:
+                logger.warning(f"Failed to send emergency message: {em_err}")
 
         elif intent == "CANCEL":
             cancelled = cancel_appointment(phone, date_str)

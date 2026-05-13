@@ -16,6 +16,8 @@ venv/
 database/*.db
 database/*.db-shm
 database/*.db-wal
+database/*.sqlite
+backend/clinic.db
 
 # Exports & caches
 exports/
@@ -24,6 +26,7 @@ logs/*.log
 
 # Environment secrets
 .env
+google_credentials.json
 
 # OS
 Thumbs.db

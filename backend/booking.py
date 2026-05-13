@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Any, Optional
 
 from backend.config import settings
 from backend.database import (
@@ -98,11 +98,20 @@ def book_appointment(
     time: str,
     reason: Optional[str] = None,
     patient_age: Optional[str] = None,
+    patient_location: Optional[str] = None,
+    consultation_type: Optional[str] = None,
     id_card: Optional[str] = None,
     details: Optional[dict] = None,
     id_card_image_path: Optional[str] = None,
+    payment_status: Optional[str] = None,
+    payment_screenshot_path: Optional[str] = None,
+    reports_data: Any = None,
 ) -> dict:
-    appointment_id = create_appointment(phone, name, date, time, reason, patient_age, id_card, details, id_card_image_path)
+    appointment_id = create_appointment(
+        phone, name, date, time, reason, patient_age, patient_location,
+        consultation_type, id_card, details, id_card_image_path,
+        payment_status, payment_screenshot_path, reports_data,
+    )
     appointment = get_appointment_by_id(appointment_id)
     return appointment
 
@@ -161,17 +170,24 @@ def format_appointment_confirmation(appt: dict) -> str:
     time_obj = datetime.strptime(appt["time"], "%H:%M")
     formatted_time = time_obj.strftime("%I:%M %p")
 
+    patient_name = appt.get("patient_name", "Patient")
+
     fee_line = ""
     if settings.APPOINTMENT_FEE:
         fee_line = f"\n  Fee: {settings.APPOINTMENT_FEE}"
 
     return (
-        f"Appointment confirmed:\n"
+        f"Appointment confirmed for {patient_name}:\n"
         f"  Date: {day_name}, {formatted_date}\n"
         f"  Time: {formatted_time}\n"
         f"  Doctor: {settings.DOCTOR_NAME}\n"
         f"  Clinic: {settings.CLINIC_NAME}\n"
         f"  Address: {settings.CLINIC_ADDRESS}{fee_line}\n"
+        f"\n"
+        f"Contact: {settings.CLINIC_PHONE}\n"
+        f"Website: drdeepikagyno.in\n"
+        f"Reviews: https://share.google/Yp00Re2y1SBrN5NdQ\n"
+        f"\n"
         f"You will receive a reminder before your appointment."
     )
 

@@ -441,7 +441,30 @@ class ClinicControlApp(Tk):
     def start_all(self):
         self.save_settings(show_message=False)
         self.start_backend()
-        self.start_bot()
+        # Wait for backend to be healthy before starting the bot
+        def _wait_and_start_bot():
+            values = self._collect_settings()
+            port = values.get("FASTAPI_PORT", "8000")
+            url = f"http://127.0.0.1:{port}/health"
+            self._log("Waiting for backend to be ready...")
+            for attempt in range(30):  # up to ~30 seconds
+                # If backend process died, abort
+                if self.backend_proc and self.backend_proc.poll() is not None:
+                    self._log("Backend process exited before becoming healthy. Check logs.")
+                    return
+                try:
+                    with urlopen(url, timeout=2) as resp:
+                        if resp.status == 200:
+                            self._log("Backend is healthy. Starting WhatsApp bot...")
+                            self.after(0, self.start_bot)
+                            return
+                except Exception:
+                    pass
+                import time
+                time.sleep(1)
+            self._log("Backend did not become healthy after 30s. Starting bot anyway...")
+            self.after(0, self.start_bot)
+        threading.Thread(target=_wait_and_start_bot, daemon=True).start()
 
     def _stop_process(self, name: str, proc: subprocess.Popen | None):
         if not proc or proc.poll() is not None:

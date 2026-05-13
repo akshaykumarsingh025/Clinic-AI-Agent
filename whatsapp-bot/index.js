@@ -10,7 +10,7 @@ const { sendText, sendAudio, sendButtons } = require('./sender');
 const FASTAPI_URL = process.env.FASTAPI_URL || 'http://localhost:8000';
 const AUTH_FOLDER = process.env.WHATSAPP_AUTH_FOLDER || path.join(__dirname, 'auth_info');
 const KEEPALIVE_PHONE = process.env.KEEPALIVE_PHONE || '919871208803';
-const KEEPALIVE_INTERVAL_MS = parseInt(process.env.KEEPALIVE_INTERVAL_MS) || 30 * 60 * 1000;
+const KEEPALIVE_INTERVAL_MS = parseInt(process.env.KEEPALIVE_INTERVAL_MS) || 15 * 60 * 1000;
 const MAX_DECRYPTION_FAILS = 5;
 const DECRYPTION_FAIL_WINDOW_MS = 60000;
 
@@ -234,24 +234,48 @@ async function connectWhatsApp() {
                 const isButtonReply = !audioPath && /^\d$/.test(messageText.trim());
 
                 let response;
+                const maxRetries = 3;
+                let lastErr = null;
+                for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                    try {
+                        if (isButtonReply) {
+                            response = await axios.post(`${FASTAPI_URL}/webhook/button-reply`, {
+                                phone: phone,
+                                button_number: parseInt(messageText.trim()),
+                            }, { timeout: 30000 });
+                        } else {
+                            // Image/audio messages need more time (Ollama vision + AI processing)
+                            const reqTimeout = (imagePath || audioPath) ? 180000 : 90000;
+                            response = await axios.post(`${FASTAPI_URL}/webhook/message`, {
+                                phone: phone,
+                                message_text: messageText || null,
+                                audio_path: audioPath,
+                                image_path: imagePath,
+                            }, { timeout: reqTimeout });
+                        }
+                        lastErr = null;
+                        break;
+                    } catch (retryErr) {
+                        lastErr = retryErr;
+                        const isConnErr = retryErr.code === 'ECONNREFUSED' || retryErr.code === 'ETIMEDOUT' || retryErr.code === 'ECONNRESET';
+                        if (isConnErr && attempt < maxRetries) {
+                            console.log(`[whatsapp] Retry ${attempt}/${maxRetries} for ${phone}...`);
+                            await new Promise(r => setTimeout(r, 2000 * attempt));
+                            continue;
+                        }
+                        throw retryErr;
+                    }
+                }
+
+                if (lastErr) throw lastErr;
+
                 if (isButtonReply) {
-                    response = await axios.post(`${FASTAPI_URL}/webhook/button-reply`, {
-                        phone: phone,
-                        button_number: parseInt(messageText.trim()),
-                    });
                     const reply = response.data.reply;
                     if (reply) {
                         await sock.sendPresenceUpdate('paused', senderJid).catch(() => {});
                         await sendText(sock, senderJid, reply);
                     }
                 } else {
-                    response = await axios.post(`${FASTAPI_URL}/webhook/message`, {
-                        phone: phone,
-                        message_text: messageText || null,
-                        audio_path: audioPath,
-                        image_path: imagePath,
-                    });
-
                     const { text_reply, audio_path: reply_audio } = response.data;
                     console.log(`Backend response: text_reply="${text_reply}", audio_path="${reply_audio}"`);
 
@@ -277,6 +301,7 @@ async function connectWhatsApp() {
                         : err.message || String(err);
                 console.error('Error processing message:', errDetail);
                 try {
+                    await sock.sendPresenceUpdate('paused', senderJid).catch(() => {});
                     await sendText(sock, senderJid, "I'm having trouble right now. Please try again in a moment.");
                 } catch (sendErr) {
                     console.error('Failed to send error message:', sendErr.message);

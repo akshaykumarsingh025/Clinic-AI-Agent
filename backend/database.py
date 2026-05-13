@@ -47,8 +47,10 @@ def init_db():
             phone TEXT UNIQUE NOT NULL,
             name TEXT,
             age TEXT,
+            location TEXT,
             id_card TEXT,
             extra_details_json TEXT,
+            id_card_image_path TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
@@ -61,9 +63,15 @@ def init_db():
             time TEXT NOT NULL,
             reason TEXT,
             patient_age TEXT,
+            patient_location TEXT,
+            consultation_type TEXT,
             id_card TEXT,
             details_json TEXT,
             status TEXT DEFAULT 'booked',
+            payment_status TEXT DEFAULT 'pending',
+            payment_screenshot_path TEXT,
+            reports_data_json TEXT,
+            id_card_image_path TEXT,
             reminder_sent INTEGER DEFAULT 0,
             followup_sent INTEGER DEFAULT 0,
             followup_response TEXT,
@@ -86,20 +94,37 @@ def init_db():
             reason TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS patient_documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone TEXT NOT NULL,
+            appointment_id INTEGER,
+            document_type TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            extracted_data_json TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
         CREATE INDEX IF NOT EXISTS idx_appointments_date ON appointments(date);
         CREATE INDEX IF NOT EXISTS idx_appointments_phone ON appointments(phone);
         CREATE INDEX IF NOT EXISTS idx_appointments_status ON appointments(status);
         CREATE INDEX IF NOT EXISTS idx_conversations_phone ON conversations(phone);
+        CREATE INDEX IF NOT EXISTS idx_patient_documents_phone ON patient_documents(phone);
     """)
 
     _ensure_column(conn, "patients", "age", "TEXT")
+    _ensure_column(conn, "patients", "location", "TEXT")
     _ensure_column(conn, "patients", "id_card", "TEXT")
     _ensure_column(conn, "patients", "extra_details_json", "TEXT")
     _ensure_column(conn, "patients", "id_card_image_path", "TEXT")
     _ensure_column(conn, "appointments", "patient_age", "TEXT")
+    _ensure_column(conn, "appointments", "patient_location", "TEXT")
+    _ensure_column(conn, "appointments", "consultation_type", "TEXT")
     _ensure_column(conn, "appointments", "id_card", "TEXT")
     _ensure_column(conn, "appointments", "details_json", "TEXT")
     _ensure_column(conn, "appointments", "id_card_image_path", "TEXT")
+    _ensure_column(conn, "appointments", "payment_status", "TEXT DEFAULT 'pending'")
+    _ensure_column(conn, "appointments", "payment_screenshot_path", "TEXT")
+    _ensure_column(conn, "appointments", "reports_data_json", "TEXT")
 
     conn.commit()
     conn.close()
@@ -118,19 +143,22 @@ def create_patient(
     phone: str,
     name: Optional[str] = None,
     age: Optional[str] = None,
+    location: Optional[str] = None,
     id_card: Optional[str] = None,
     extra_details: Any = None,
     id_card_image_path: Optional[str] = None,
 ) -> dict:
     conn = get_db()
-    cursor = conn.execute(
-        "INSERT OR IGNORE INTO patients (phone, name, age, id_card, extra_details_json, id_card_image_path) VALUES (?, ?, ?, ?, ?, ?)",
-        (phone, name, age, id_card, _json_or_none(extra_details), id_card_image_path),
+    conn.execute(
+        "INSERT OR IGNORE INTO patients (phone, name, age, location, id_card, extra_details_json, id_card_image_path) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (phone, name, age, location, id_card, _json_or_none(extra_details), id_card_image_path),
     )
     if name:
         conn.execute("UPDATE patients SET name = ? WHERE phone = ? AND (name IS NULL OR name = '')", (name, phone))
     if age:
         conn.execute("UPDATE patients SET age = ? WHERE phone = ? AND (age IS NULL OR age = '')", (age, phone))
+    if location:
+        conn.execute("UPDATE patients SET location = ? WHERE phone = ? AND (location IS NULL OR location = '')", (location, phone))
     if id_card:
         conn.execute("UPDATE patients SET id_card = ? WHERE phone = ? AND (id_card IS NULL OR id_card = '')", (id_card, phone))
     if id_card_image_path:
@@ -144,6 +172,15 @@ def create_patient(
     conn.commit()
     conn.close()
     return dict(row)
+
+
+def update_patient_location(phone: str, location: str):
+    conn = get_db()
+    try:
+        conn.execute("UPDATE patients SET location = ? WHERE phone = ?", (location, phone))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def get_appointments(date: str) -> list[dict]:
@@ -165,6 +202,7 @@ def get_all_appointments() -> list[dict]:
         SELECT
             a.*,
             p.age AS patient_record_age,
+            p.location AS patient_record_location,
             p.id_card AS patient_record_id_card,
             p.extra_details_json AS patient_record_details_json
         FROM appointments a
@@ -183,19 +221,26 @@ def create_appointment(
     time: str,
     reason: Optional[str] = None,
     patient_age: Optional[str] = None,
+    patient_location: Optional[str] = None,
+    consultation_type: Optional[str] = None,
     id_card: Optional[str] = None,
     details: Any = None,
     id_card_image_path: Optional[str] = None,
+    payment_status: Optional[str] = None,
+    payment_screenshot_path: Optional[str] = None,
+    reports_data: Any = None,
 ) -> int:
     conn = get_db()
     patient = get_patient(phone)
     if not patient:
-        create_patient(phone, name, patient_age, id_card, details, id_card_image_path)
+        create_patient(phone, name, patient_age, patient_location, id_card, details, id_card_image_path)
     else:
         if name and (not patient.get("name") or patient["name"] == ""):
             conn.execute("UPDATE patients SET name = ? WHERE phone = ?", (name, phone))
         if patient_age and (not patient.get("age") or patient["age"] == ""):
             conn.execute("UPDATE patients SET age = ? WHERE phone = ?", (patient_age, phone))
+        if patient_location and (not patient.get("location") or patient["location"] == ""):
+            conn.execute("UPDATE patients SET location = ? WHERE phone = ?", (patient_location, phone))
         if id_card and (not patient.get("id_card") or patient["id_card"] == ""):
             conn.execute("UPDATE patients SET id_card = ? WHERE phone = ?", (id_card, phone))
         if id_card_image_path and (not patient.get("id_card_image_path") or patient["id_card_image_path"] == ""):
@@ -209,10 +254,10 @@ def create_appointment(
     cursor = conn.execute(
         """
         INSERT INTO appointments
-        (patient_id, phone, patient_name, date, time, reason, patient_age, id_card, details_json, id_card_image_path)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (patient_id, phone, patient_name, date, time, reason, patient_age, patient_location, consultation_type, id_card, details_json, id_card_image_path, payment_status, payment_screenshot_path, reports_data_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (patient_id, phone, name, date, time, reason, patient_age, id_card, _json_or_none(details), id_card_image_path),
+        (patient_id, phone, name, date, time, reason, patient_age, patient_location, consultation_type, id_card, _json_or_none(details), id_card_image_path, payment_status or "pending", payment_screenshot_path, _json_or_none(reports_data)),
     )
     appointment_id = cursor.lastrowid
     conn.commit()
@@ -228,6 +273,74 @@ def update_appointment_status(appointment_id: int, status: str):
             (status, appointment_id),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def update_appointment_payment(appointment_id: int, payment_status: str, payment_screenshot_path: Optional[str] = None):
+    conn = get_db()
+    try:
+        if payment_screenshot_path:
+            conn.execute(
+                "UPDATE appointments SET payment_status = ?, payment_screenshot_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (payment_status, payment_screenshot_path, appointment_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE appointments SET payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (payment_status, appointment_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def update_appointment_reports(appointment_id: int, reports_data: Any):
+    conn = get_db()
+    try:
+        conn.execute(
+            "UPDATE appointments SET reports_data_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (_json_or_none(reports_data), appointment_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def save_patient_document(
+    phone: str,
+    document_type: str,
+    file_path: str,
+    extracted_data: Any = None,
+    appointment_id: Optional[int] = None,
+) -> int:
+    conn = get_db()
+    try:
+        cursor = conn.execute(
+            "INSERT INTO patient_documents (phone, appointment_id, document_type, file_path, extracted_data_json) VALUES (?, ?, ?, ?, ?)",
+            (phone, appointment_id, document_type, file_path, _json_or_none(extracted_data)),
+        )
+        doc_id = cursor.lastrowid
+        conn.commit()
+        return doc_id
+    finally:
+        conn.close()
+
+
+def get_patient_documents(phone: str, document_type: Optional[str] = None) -> list[dict]:
+    conn = get_db()
+    try:
+        if document_type:
+            rows = conn.execute(
+                "SELECT * FROM patient_documents WHERE phone = ? AND document_type = ? ORDER BY created_at DESC",
+                (phone, document_type),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM patient_documents WHERE phone = ? ORDER BY created_at DESC",
+                (phone,),
+            ).fetchall()
+        return [dict(r) for r in rows]
     finally:
         conn.close()
 

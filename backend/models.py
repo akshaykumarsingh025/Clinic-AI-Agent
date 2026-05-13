@@ -48,10 +48,13 @@ class AIResponse(BaseModel):
     time_preference: Optional[str] = None
     reason: Optional[str] = None
     patient_age: Optional[str] = None
+    patient_location: Optional[str] = None
+    consultation_type: Optional[str] = None
     id_card: Optional[str] = None
     patient_details: Optional[dict] = None
     needs_more_info: bool = False
     booking_ready: bool = False
+    payment_pending: bool = False
     no_show_response_type: Optional[str] = None
     language: str = "english"
     reply: str

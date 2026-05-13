@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 from typing import Any, Optional
@@ -25,13 +26,18 @@ You speak like a real person on WhatsApp — short messages, natural tone, no ro
 CLINIC INFO:
 - Doctor: {doctor_name} ({specialty})
 - Address: {address}
-- Fee: {appointment_fee}
 - Today: {current_datetime}
 - Booking hours: Every day, 9:00 AM to 9:00 PM
 - Slot duration: {slot_duration} minutes
 - Website: drdeepikagyno.in
 - Google reviews: https://share.google/Yp00Re2y1SBrN5NdQ
-- Phone: {clinic_phone}
+- Clinic phone: {clinic_phone}
+- Emergency phone: +918595954097
+
+FEES:
+- In-clinic consultation: Rs 1000
+- Online consultation: Rs 500
+- Discount: Use code AKS250 on drdeepikagyno.in for Rs 250 off → consultation at Rs 750
 
 {patient_context}
 
@@ -63,12 +69,71 @@ ABOUT DR. DEEPIKA — USE THIS TO CONVINCE PATIENTS:
 - Share the website when they want more info: drdeepikagyno.in
 - If a male patient asks, politely explain she is a gynecologist specializing in women's health, and recommend they see a general physician for their concern
 
+MANDATORY CONVERSATION FLOW — ALWAYS FOLLOW THIS ORDER:
+You MUST collect information in this exact sequence. Do NOT skip steps. Do NOT jump ahead.
+
+STEP 1 — NAME: Always ask for the patient's name first. "Aapka naam?" / "Your name?"
+STEP 2 — AGE: After getting the name, ask for age. "Aapki umar?" / "Your age?"
+STEP 3 — LOCATION: After getting age, ask where they are calling from. "Aap kahan se aa rahe hain?" / "Where are you calling from?"
+STEP 4 — PURPOSE: Ask "Aap kya purpose se aaye hain? Medical consultation ya kuch aur?" / "Are you here for a medical consultation or something else?"
+  - If they say business or non-medical → adjust your tone accordingly, be professional, ask how you can help with their business query
+  - If they say medical → go to STEP 5
+STEP 5 — CONCERN/PROBLEM: Ask about their medical concern. "Aapko kya problem hai?" / "What's your concern?"
+STEP 6 — REPORTS: Ask "Koi report ya prescription hai toh share karein" / "Do you have any reports or prescriptions to share?" — tell them they can send images. This is OPTIONAL — if they don't have reports, move on.
+STEP 7 — CONSULTATION TYPE: Ask "Aap clinic pe aakar consult karna chahte hain ya online consultation?" / "Would you like in-clinic or online consultation?"
+  - In-clinic: Rs 1000
+  - Online: Rs 500
+  - If they ask for discount → tell them about code AKS250 on drdeepikagyno.in for Rs 750 consultation
+STEP 8 — DATE AND TIME: Ask for preferred date and time.
+STEP 9 — PAYMENT: After all details collected and date/time confirmed, tell them: "To confirm your appointment, please make the payment. I'll send you the QR code."
+STEP 10 — ID CARD: After payment, politely ask for ID card (Aadhaar/Licence) — OPTIONAL.
+
+IMPORTANT FLOW RULES:
+- If patient gives multiple things in one message (e.g. "Hi, I'm Priya, age 28, from Delhi"), don't ask again — proceed to the NEXT missing step.
+- NEVER ask for something already provided. Always check patient context for returning patients.
+- For returning patients where name/age/location is already known, skip those steps and go directly to the concern.
+- If they want discount → tell them about code AKS250 on drdeepikagyno.in for Rs 750 consultation.
+- If they mention fees → In-clinic Rs 1000, Online Rs 500, Discount code AKS250 for Rs 750.
+
+EMERGENCY HANDLING (VERY IMPORTANT — OVERRIDES NORMAL FLOW):
+If a patient describes an EMERGENCY situation like:
+- Labour pain / delivery pain
+- Severe bleeding / heavy bleeding
+- Severe abdominal pain
+- Pregnancy complications
+- Any life-threatening gynecological emergency
+Then STOP the normal flow and immediately:
+1. Show urgency and care
+2. Ask: "What is the problem? Can you share your name, contact number, and current location?"
+3. Give the emergency number: +918595954097 — tell them to call RIGHT NOW
+4. Tell them: "Dr. Deepika's emergency line is +918595954097. Please call immediately."
+5. Do NOT waste time asking for appointment details or following the normal flow
+6. Set intent to EMERGENCY
+7. After giving the emergency number, ask if they need help reaching the hospital
+
+PAYMENT FLOW:
+- After collecting all details and confirming date/time, say: "To confirm your booking, please make the payment. I'll send you the QR code."
+- Set booking_ready=true, payment_pending=true
+- When they share a payment screenshot → acknowledge it, confirm the appointment
+- If they ask about fees → In-clinic Rs 1000, Online Rs 500, Discount code AKS250 for Rs 750
+- If they ask for discount → send them to drdeepikagyno.in and tell them to book with code "AKS250" for Rs 250 off → consultation at Rs 750
+
+IMAGE HANDLING:
+- When a patient sends an image, the system will auto-detect what it is (ID card, prescription, report, payment screenshot, etc)
+- You will receive the extracted data from the image in your context
+- If it's an ID card → extract name, ID number, DOB and use it to fill patient details. Don't ask again what's already in the image.
+- If it's a prescription/report → acknowledge it, summarize what you understood, and proceed with the flow
+- If it's a payment screenshot → verify the payment and confirm the appointment
+- Always acknowledge what you received from the image before asking the next question
+
 WHAT YOU DO:
 - Book, reschedule, cancel appointments
 - Answer questions about clinic timings, address, fees, doctor speciality
 - Gently convince hesitant patients to visit Dr. Deepika
+- Handle emergencies by providing the emergency number immediately
 - For any medical questions → gently redirect them to consult the doctor in person
 - Never diagnose, prescribe, or give medical advice
+- If someone is here for business → be professional, address their query, don't push medical booking
 
 UNDERSTANDING PATIENT INTENT (VERY IMPORTANT):
 Patients don't always say "reschedule" directly. Understand INDIRECT requests:
@@ -80,6 +145,7 @@ Patients don't always say "reschedule" directly. Understand INDIRECT requests:
 - "Cancel krna h" / "Want to cancel" = CANCEL
 - "Mil sakta h" / "Can I get an appointment" = BOOK
 - "Dikhna hai" / "Need to show/consult" = BOOK
+- "Labour pain" / "heavy bleeding" / "severe pain" / "emergency" = EMERGENCY
 - If they just say a date like "10 ko" and have an active appointment → it's RESCHEDULE with that date
 - If they just say a date and have NO active appointment → it's a new BOOKING with that date
 
@@ -89,15 +155,6 @@ DATE/TIME RULES:
 - Numbers like "1240" = 12:40, "430" = 4:30
 - Accept any time from 9:00 AM to 9:00 PM
 - Don't book past dates or times
-
-BOOKING FLOW:
-- REQUIRED to book: name, phone number, reason for visit, date and time
-- Phone number: The patient's WhatsApp ID is '{whatsapp_id}'. If this looks like a long masked anonymous ID (e.g. 13+ digits like '134076145090595'), you MUST ask the patient for their actual 10-digit contact number. This is COMPULSORY. If it already looks like a normal phone number, do NOT ask for it.
-- Name: If you already know it (see patient context above), use it and don't ask again
-- ID card (Aadhaar/Driving Licence): This is OPTIONAL. Ask once politely — "If you'd like, you can share your Aadhaar or licence number for your file. Otherwise you can submit it at the clinic." If they decline or skip, just proceed with booking. Accept either the number or a photo/image of their ID.
-- If patient gives everything in one message, book immediately — don't ask again
-- If anything required is missing, ask naturally in conversation
-- IMPORTANT: Once booking starts, keep intent as BOOK until done. Don't switch to RESCHEDULE unless they explicitly want to change an EXISTING appointment.
 
 DUPLICATE AWARENESS:
 - If the patient already has an active appointment (check patient context), mention it naturally
@@ -109,24 +166,41 @@ INTENT TYPES:
 - CANCEL: Cancel appointment
 - STATUS: Check appointment details
 - NO_SHOW_RESPONSE: Replying to missed appointment follow-up (be gentle, never pushy)
+- EMERGENCY: Patient in urgent medical situation — give emergency number immediately
 - QUERY: General clinic question, questions about doctor, reviews, experience
 - UNKNOWN: Can't understand
 
+CURRENT CONVERSATION STATE:
+- Already collected name: {has_name}
+- Already collected age: {has_age}
+- Already collected location: {has_location}
+- Already collected concern: {has_concern}
+- Already collected reports: {has_reports}
+- Already collected consultation type: {has_consultation_type}
+- Already collected date/time: {has_datetime}
+- Payment pending: {payment_pending}
+- Image data received: {image_data_summary}
+
+Based on the conversation state above, ask ONLY for the NEXT missing piece of information. Do NOT repeat questions for information already collected.
+
 Respond ONLY in this JSON (no markdown, no extra text):
 {{
-  "intent": "BOOK|RESCHEDULE|CANCEL|STATUS|NO_SHOW_RESPONSE|QUERY|UNKNOWN",
+  "intent": "BOOK|RESCHEDULE|CANCEL|STATUS|NO_SHOW_RESPONSE|EMERGENCY|QUERY|UNKNOWN",
   "patient_name": "string or null",
   "date": "YYYY-MM-DD or null",
   "time": "HH:MM or null",
   "time_preference": "morning|afternoon|evening|null",
   "reason": "string or null",
   "patient_age": "string or null",
+  "patient_location": "string or null",
+  "consultation_type": "in_clinic|online|null",
   "id_card": "string or null",
   "id_card_image": true or false,
   "contact_number": "string or null",
   "patient_details": {{"any_extra_detail": "string"}} or null,
   "needs_more_info": true or false,
   "booking_ready": true or false,
+  "payment_pending": true or false,
   "no_show_response_type": "reschedule|found_doctor|callback|unwell|null",
   "language": "hinglish|english",
   "reply": "Your natural WhatsApp message to the patient"
@@ -138,7 +212,6 @@ def _build_patient_context(
     active_appointments: Optional[list[dict]] = None,
     no_show_appointments: Optional[list[dict]] = None,
 ) -> str:
-    """Build a context block so the AI knows who it's talking to."""
     lines = []
 
     if patient_record:
@@ -148,6 +221,9 @@ def _build_patient_context(
         age = patient_record.get("age")
         if age:
             lines.append(f"  Age: {age}")
+        location = patient_record.get("location")
+        if location:
+            lines.append(f"  Location: {location}")
         id_card = patient_record.get("id_card")
         if id_card:
             lines.append(f"  ID Card on file: {id_card}")
@@ -179,14 +255,80 @@ def _build_patient_context(
     return "\n".join(lines)
 
 
+def _build_conversation_state(
+    phone: str,
+    patient_record: Optional[dict] = None,
+    image_data: Optional[dict] = None,
+) -> dict:
+    has_name = "no"
+    has_age = "no"
+    has_location = "no"
+    has_concern = "no"
+    has_reports = "no"
+    has_consultation_type = "no"
+    has_datetime = "no"
+    payment_pending = "no"
+
+    if patient_record:
+        if patient_record.get("name"):
+            has_name = "yes"
+        if patient_record.get("age"):
+            has_age = "yes"
+        if patient_record.get("location"):
+            has_location = "yes"
+
+    history = get_conversation_history(phone, limit=20)
+    for msg in history:
+        content = msg.get("content", "")
+        role = msg.get("role", "")
+        if role == "assistant":
+            try:
+                data = json.loads(content)
+                if data.get("patient_name"):
+                    has_name = "yes"
+                if data.get("patient_age"):
+                    has_age = "yes"
+                if data.get("patient_location"):
+                    has_location = "yes"
+                if data.get("reason"):
+                    has_concern = "yes"
+                if data.get("consultation_type"):
+                    has_consultation_type = "yes"
+                if data.get("date") or data.get("time"):
+                    has_datetime = "yes"
+                if data.get("payment_pending"):
+                    payment_pending = "yes"
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+    image_data_summary = "none"
+    if image_data and image_data.get("success"):
+        image_data_summary = json.dumps(image_data.get("data", {}), ensure_ascii=False)
+
+    return {
+        "has_name": has_name,
+        "has_age": has_age,
+        "has_location": has_location,
+        "has_concern": has_concern,
+        "has_reports": has_reports,
+        "has_consultation_type": has_consultation_type,
+        "has_datetime": has_datetime,
+        "payment_pending": payment_pending,
+        "image_data_summary": image_data_summary,
+    }
+
+
 def _build_system_prompt(
     phone: str,
     patient_record: Optional[dict] = None,
     active_appointments: Optional[list[dict]] = None,
     no_show_appointments: Optional[list[dict]] = None,
+    image_data: Optional[dict] = None,
 ) -> str:
     now = clinic_now().strftime("%A, %d %B %Y, %I:%M %p")
     patient_ctx = _build_patient_context(patient_record, active_appointments, no_show_appointments)
+    conv_state = _build_conversation_state(phone, patient_record, image_data)
+
     return SYSTEM_PROMPT.format(
         clinic_name=settings.CLINIC_NAME,
         doctor_name=settings.DOCTOR_NAME,
@@ -198,6 +340,7 @@ def _build_system_prompt(
         patient_context=patient_ctx,
         whatsapp_id=phone,
         clinic_phone=settings.CLINIC_PHONE,
+        **conv_state,
     )
 
 
@@ -231,13 +374,16 @@ async def get_ai_response(
     patient_record: Optional[dict] = None,
     active_appointments: Optional[list[dict]] = None,
     no_show_appointments: Optional[list[dict]] = None,
+    image_data: Optional[dict] = None,
 ) -> dict:
     detected_language = detect_language(user_message)
     detected_date = available_slots_date or parse_date_from_text(user_message)
     detected_time = parse_time_from_text(user_message)
     history = get_conversation_history(phone, limit=10)
 
-    system_prompt = _build_system_prompt(phone, patient_record, active_appointments, no_show_appointments)
+    system_prompt = _build_system_prompt(
+        phone, patient_record, active_appointments, no_show_appointments, image_data
+    )
     messages = [{"role": "system", "content": system_prompt}]
 
     slots_context = _get_slots_context(detected_date)
@@ -247,6 +393,10 @@ async def get_ai_response(
     if detected_time:
         messages.append({"role": "system", "content": f"Parsed time from patient message: {detected_time}"})
 
+    if image_data and image_data.get("success"):
+        img_summary = f"IMAGE DATA EXTRACTED (use this information, do NOT ask the patient for details already extracted): {json.dumps(image_data.get('data', {}), ensure_ascii=False)}"
+        messages.append({"role": "system", "content": img_summary})
+
     for msg in history:
         messages.append({"role": msg["role"], "content": msg["content"]})
 
@@ -255,12 +405,15 @@ async def get_ai_response(
     save_conversation(phone, "user", user_message)
 
     try:
-        client = ollama.Client(host=settings.OLLAMA_HOST)
-        response = client.chat(
-            model=settings.OLLAMA_MODEL,
-            messages=messages,
-            options={"temperature": 0.3, "num_predict": 512},
-        )
+        def _ollama_chat(msgs):
+            client = ollama.Client(host=settings.OLLAMA_HOST)
+            return client.chat(
+                model=settings.OLLAMA_MODEL,
+                messages=msgs,
+                options={"temperature": 0.3, "num_predict": 512},
+            )
+
+        response = await asyncio.to_thread(_ollama_chat, messages)
         raw = response["message"]["content"].strip()
     except Exception as e:
         fallback = {
@@ -271,11 +424,14 @@ async def get_ai_response(
             "time_preference": None,
             "reason": None,
             "patient_age": None,
+            "patient_location": None,
+            "consultation_type": None,
             "id_card": None,
             "id_card_image": False,
             "patient_details": None,
             "needs_more_info": True,
             "booking_ready": False,
+            "payment_pending": False,
             "no_show_response_type": None,
             "language": detected_language,
             "technical_error": str(e),
@@ -295,6 +451,29 @@ async def get_ai_response(
     if not parsed.get("language"):
         parsed["language"] = detected_language
     parsed["reply"] = clean_patient_reply(parsed.get("reply"), parsed.get("language") or detected_language)
+
+    if image_data and image_data.get("success"):
+        img_data = image_data.get("data", {})
+        img_type = image_data.get("image_type", "general")
+        if img_type == "id_card" and img_data:
+            if not parsed.get("patient_name") and img_data.get("name"):
+                parsed["patient_name"] = img_data["name"]
+            if not parsed.get("patient_age") and img_data.get("dob"):
+                parsed["patient_age"] = img_data["dob"]
+            if not parsed.get("id_card") and img_data.get("id_number"):
+                parsed["id_card"] = f"{img_data.get('id_type', 'ID')}: {img_data['id_number']}"
+            if not parsed.get("patient_details"):
+                parsed["patient_details"] = {}
+            if img_data.get("address"):
+                parsed["patient_details"]["address_from_id"] = img_data["address"]
+            if img_data.get("gender"):
+                parsed["patient_details"]["gender"] = img_data["gender"]
+        elif img_type == "payment_screenshot" and img_data:
+            if img_data.get("payment_status") == "success":
+                parsed["payment_pending"] = False
+            if not parsed.get("patient_details"):
+                parsed["patient_details"] = {}
+            parsed["patient_details"]["payment_info"] = img_data
 
     save_conversation(phone, "assistant", json.dumps(parsed, ensure_ascii=False))
 
@@ -316,12 +495,15 @@ def _parse_ai_response(raw: str) -> dict:
                     "time_preference": data.get("time_preference"),
                     "reason": data.get("reason"),
                     "patient_age": data.get("patient_age"),
+                    "patient_location": data.get("patient_location"),
+                    "consultation_type": data.get("consultation_type"),
                     "id_card": data.get("id_card"),
                     "id_card_image": data.get("id_card_image", False),
                     "contact_number": data.get("contact_number"),
                     "patient_details": data.get("patient_details"),
                     "needs_more_info": data.get("needs_more_info", True),
                     "booking_ready": data.get("booking_ready", False),
+                    "payment_pending": data.get("payment_pending", False),
                     "no_show_response_type": data.get("no_show_response_type"),
                     "language": data.get("language", "english"),
                     "reply": clean_patient_reply(data.get("reply", ""), data.get("language", "english")),
@@ -337,12 +519,15 @@ def _parse_ai_response(raw: str) -> dict:
         "time_preference": None,
         "reason": None,
         "patient_age": None,
+        "patient_location": None,
+        "consultation_type": None,
         "id_card": None,
         "id_card_image": False,
         "contact_number": None,
         "patient_details": None,
         "needs_more_info": True,
         "booking_ready": False,
+        "payment_pending": False,
         "no_show_response_type": None,
         "language": "english",
         "reply": clean_patient_reply(raw if raw else "I'm sorry, could you please repeat that?"),

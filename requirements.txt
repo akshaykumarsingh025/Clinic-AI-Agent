@@ -14,3 +14,5 @@ openpyxl==3.1.5
 gspread==6.2.1
 google-auth==2.49.0
 google-api-python-client==2.115.0
+pdf2image==1.17.0
+Pillow==11.2.1

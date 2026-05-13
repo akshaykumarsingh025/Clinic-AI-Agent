@@ -17,13 +17,17 @@ BOOKING_COLUMNS = [
     "Status",
     "Patient Name",
     "Phone",
+    "Location",
     "Date",
     "Time",
     "Reason",
+    "Consultation Type",
     "Patient Age",
     "ID Card",
+    "Payment Status",
     "Appointment Details",
     "Patient Record Age",
+    "Patient Record Location",
     "Patient Record ID Card",
     "Patient Record Details",
     "Reminder Sent",
@@ -49,13 +53,17 @@ def appointment_rows() -> list[list[str]]:
             _stringify(appt.get("status")),
             _stringify(appt.get("patient_name")),
             _stringify(appt.get("phone")),
+            _stringify(appt.get("patient_location") or appt.get("patient_record_location", "")),
             _stringify(appt.get("date")),
             _stringify(appt.get("time")),
             _stringify(appt.get("reason")),
+            _stringify(appt.get("consultation_type", "")),
             _stringify(appt.get("patient_age")),
             _stringify(appt.get("id_card")),
+            _stringify(appt.get("payment_status", "")),
             _stringify(appt.get("details_json")),
             _stringify(appt.get("patient_record_age")),
+            _stringify(appt.get("patient_record_location", "")),
             _stringify(appt.get("patient_record_id_card")),
             _stringify(appt.get("patient_record_details_json")),
             _stringify(appt.get("reminder_sent")),
@@ -127,7 +135,7 @@ def sync_appointments_to_google_sheet(
     client = gspread.service_account(filename=credentials_path)
     spreadsheet = client.open_by_key(sheet_id)
 
-    gid = worksheet_gid or settings.GOOGLE_SHEET_GID
+    gid = worksheet_gid if worksheet_gid is not None else settings.GOOGLE_SHEET_GID
     if gid is not None:
         worksheet = spreadsheet.get_worksheet_by_id(gid)
     else:
@@ -182,18 +190,27 @@ def sync_appointments_to_google_sheet(
         else:
             id_card_display = ""
 
+        id_photo_url = ""
+        if id_card_image and os.path.exists(str(id_card_image)):
+            id_photo_url = _upload_id_image_to_drive(
+                str(id_card_image), credentials_path,
+                _stringify(appt.get("patient_name", "Patient"))
+            )
+
         new_rows.append([
             _stringify(appt.get("patient_name")),
             display_phone,
-            "",
+            _stringify(appt.get("patient_location") or appt.get("patient_record_location", "")),
             _stringify(appt.get("date")),
             _stringify(appt.get("time")),
             _stringify(appt.get("reason")),
-            "",
+            _stringify(appt.get("consultation_type", "")),
             _stringify(appt.get("created_at")),
             calendar_status,
             "WhatsApp",
             id_card_display,
+            id_photo_url,
+            _stringify(appt.get("payment_status", "")),
         ])
 
     if new_rows:
@@ -204,6 +221,55 @@ def sync_appointments_to_google_sheet(
         "worksheet": worksheet.title,
         "rows_synced": len(new_rows),
     }
+
+
+def _upload_id_image_to_drive(image_path: str, credentials_path: str, patient_name: str) -> str:
+    if not image_path or not os.path.exists(image_path):
+        return ""
+
+    try:
+        from google.oauth2 import service_account
+        from googleapiclient.discovery import build
+        from googleapiclient.http import MediaFileUpload
+    except ImportError:
+        logger.warning("google-api-python-client required for image upload")
+        return ""
+
+    try:
+        SCOPES = ['https://www.googleapis.com/auth/drive.file']
+        creds = service_account.Credentials.from_service_account_file(credentials_path, scopes=SCOPES)
+        service = build('drive', 'v3', credentials=creds)
+
+        filename = f"ID_{patient_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}{Path(image_path).suffix}"
+
+        file_metadata = {
+            'name': filename,
+            'mimeType': 'application/vnd.google-apps.photo',
+        }
+
+        media = MediaFileUpload(image_path, mimetype='image/jpeg', resumable=True)
+        uploaded = service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id',
+        ).execute()
+
+        file_id = uploaded.get('id')
+        if not file_id:
+            return ""
+
+        service.permissions().create(
+            fileId=file_id,
+            body={'type': 'anyone', 'role': 'reader'},
+        ).execute()
+
+        image_url = f"https://drive.google.com/uc?id={file_id}"
+        logger.info(f"Uploaded ID image for {patient_name}: {image_url}")
+        return image_url
+
+    except Exception as e:
+        logger.error(f"Failed to upload ID image: {e}")
+        return ""
 
 
 def sync_appointment_to_google_calendar(appointment: dict) -> dict:

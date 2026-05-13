@@ -42,11 +42,15 @@ class Settings:
         self.WHATSAPP_BOT_URL: str = os.getenv("WHATSAPP_BOT_URL", "http://localhost:3001")
         self.FASTAPI_HOST: str = os.getenv("FASTAPI_HOST", "0.0.0.0")
         self.FASTAPI_PORT: int = int(os.getenv("FASTAPI_PORT", "8000"))
+        self.OLLAMA_VISION_MODEL: str = os.getenv("OLLAMA_VISION_MODEL", "")
+        self.QR_CODE_PATH: str = os.getenv("QR_CODE_PATH", "./static/qr_code.png")
+        self.DOCTOR_PHONE: str = os.getenv("DOCTOR_PHONE", "+918595954097")
+        self.CLINIC_WHATSAPP: str = os.getenv("CLINIC_WHATSAPP", "+919871208803")
 
         self.DB_PATH: str = os.getenv("DB_PATH", "./database/clinic.db")
         self.EXPORT_DIR: str = os.getenv("EXPORT_DIR", "./exports")
         self.GOOGLE_SHEET_ID: str = os.getenv("GOOGLE_SHEET_ID", "")
-        self.GOOGLE_SHEET_GID: int = int(os.getenv("GOOGLE_SHEET_GID", "759128510")) if os.getenv("GOOGLE_SHEET_GID") else None
+        self.GOOGLE_SHEET_GID: int = int(os.getenv("GOOGLE_SHEET_GID", "0")) if os.getenv("GOOGLE_SHEET_GID", "") != "" else None
         self.GOOGLE_SERVICE_ACCOUNT_JSON: str = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "") or str(Path(__file__).parent.parent / "googlekey" / "service_account.json")
         self.GOOGLE_CALENDAR_ID: str = os.getenv("GOOGLE_CALENDAR_ID", "primary")
 
