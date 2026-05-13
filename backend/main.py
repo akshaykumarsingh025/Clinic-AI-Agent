@@ -136,12 +136,13 @@ async def handle_message(payload: WebhookMessage):
         audio_path = payload.audio_path
         image_path = payload.image_path
         incoming_audio = bool(audio_path)
-        incoming_image = bool(image_path)
+        incoming_file = bool(image_path)
 
         patient_record = get_patient(phone)
 
-        if incoming_image and image_path and os.path.exists(image_path):
-            logger.info(f"Image received from {phone}: {image_path}")
+        if incoming_file and image_path and os.path.exists(image_path):
+            file_ext = os.path.splitext(image_path)[1].lower()
+            logger.info(f"File received from {phone}: {image_path} (type: {file_ext})")
             try:
                 image_data = await read_image_with_classification(image_path)
                 img_type = image_data.get("image_type", "general")
@@ -188,7 +189,7 @@ async def handle_message(payload: WebhookMessage):
                 logger.error(f"STT failed for {phone}: {e}")
                 return {"text_reply": "Sorry, I couldn't understand the voice note. Could you please type your message?", "audio_path": None}
 
-        if not user_message.strip() and not incoming_image:
+        if not user_message.strip() and not incoming_file:
             return {"text_reply": "Hi! How can I help you today?", "audio_path": None}
 
         language = detect_language(user_message)
@@ -258,7 +259,7 @@ async def handle_message(payload: WebhookMessage):
         contact_number = ai_result.get("contact_number")
 
         id_card_image_path = None
-        if incoming_image and image_path:
+        if incoming_file and image_path:
             id_card_image_path = image_path
             if not id_card:
                 id_card = "image_on_file"

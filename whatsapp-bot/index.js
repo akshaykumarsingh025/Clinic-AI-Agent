@@ -218,6 +218,25 @@ async function connectWhatsApp() {
                 }
             }
 
+            const docMsg = msg.message.documentMessage;
+            if (docMsg) {
+                try {
+                    const docPath = await downloadMedia(sock, msg);
+                    console.log(`Document downloaded: ${docPath}`);
+                    const docLower = (docMsg.fileName || '').toLowerCase();
+                    if (docLower.endsWith('.pdf') || docLower.endsWith('.png') || docLower.endsWith('.jpg') || docLower.endsWith('.jpeg') || docLower.endsWith('.webp')) {
+                        imagePath = docPath;
+                    } else {
+                        imagePath = docPath;
+                    }
+                    if (!messageText) {
+                        messageText = docMsg.caption || `[Patient sent a document: ${docMsg.fileName || 'file'}]`;
+                    }
+                } catch (err) {
+                    console.error('Failed to download document:', err);
+                }
+            }
+
             if (!messageText && !audioPath && !imagePath) {
                 console.log(`[whatsapp] No text/audio/image extracted from message. Message keys: ${Object.keys(msg.message || {}).join(', ')}`);
                 return;
