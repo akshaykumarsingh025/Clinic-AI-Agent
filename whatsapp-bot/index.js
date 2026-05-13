@@ -11,6 +11,7 @@ const FASTAPI_URL = process.env.FASTAPI_URL || 'http://localhost:8000';
 const AUTH_FOLDER = process.env.WHATSAPP_AUTH_FOLDER || path.join(__dirname, 'auth_info');
 const KEEPALIVE_PHONE = process.env.KEEPALIVE_PHONE || '919871208803';
 const KEEPALIVE_INTERVAL_MS = parseInt(process.env.KEEPALIVE_INTERVAL_MS) || 15 * 60 * 1000;
+const KEEPALIVE_MESSAGE = process.env.KEEPALIVE_MESSAGE || '[system keepalive - ignore]';
 const MAX_DECRYPTION_FAILS = 5;
 const DECRYPTION_FAIL_WINDOW_MS = 60000;
 
@@ -53,8 +54,22 @@ function startKeepalive() {
             console.log(`[keepalive] Presence ping sent at ${new Date().toLocaleTimeString()}`);
         } catch (err) {
             console.error('[keepalive] Ping failed:', err.message);
+            if (err.message && (err.message.includes('Not connected') || err.message.includes('Connection closed'))) {
+                console.log('[keepalive] Connection lost, attempting reconnect...');
+                stopKeepalive();
+                isReconnecting = false;
+                setTimeout(() => connectWhatsApp(), 3000);
+            }
         }
     }, KEEPALIVE_INTERVAL_MS);
+    
+    setInterval(async () => {
+        if (!currentSock || connectionStatus !== 'open') return;
+        try {
+            const jid = KEEPALIVE_PHONE.includes('@') ? KEEPALIVE_PHONE : `${KEEPALIVE_PHONE}@s.whatsapp.net`;
+            await currentSock.sendPresenceUpdate('available', jid);
+        } catch (err) {}
+    }, 3 * 60 * 1000);
 }
 
 function stopKeepalive() {
