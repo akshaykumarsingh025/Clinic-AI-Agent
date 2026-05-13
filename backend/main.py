@@ -217,14 +217,22 @@ async def handle_message(payload: WebhookMessage):
         detected_date = parse_date_from_text(user_message)
         detected_time = parse_time_from_text(user_message)
 
+        logger.info(f"Calling AI for {phone}: message='{user_message[:80]}', date={detected_date}, time={detected_time}")
+
         try:
-            ai_result = await get_ai_response(
-                phone, user_message, detected_date,
-                patient_record=patient_record,
-                active_appointments=active_appts,
-                no_show_appointments=no_show_appts,
-                image_data=image_data,
+            ai_result = await asyncio.wait_for(
+                get_ai_response(
+                    phone, user_message, detected_date,
+                    patient_record=patient_record,
+                    active_appointments=active_appts,
+                    no_show_appointments=no_show_appts,
+                    image_data=image_data,
+                ),
+                timeout=180,
             )
+        except asyncio.TimeoutError:
+            logger.error(f"AI response timed out for {phone} (180s limit)")
+            return {"text_reply": "I'm sorry, I'm taking too long to respond. Please try again.", "audio_path": None}
         except Exception as e:
             logger.error(f"AI response failed for {phone}: {e}")
             return {"text_reply": "I'm having trouble right now. Please try again in a moment.", "audio_path": None}

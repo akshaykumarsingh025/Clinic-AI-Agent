@@ -61,8 +61,12 @@ ALLOWED_TOPIC_HINTS = {
     "charge", "consultation", "doctor", "dr", "deepika", "clinic", "address", "location",
     "timing", "time", "cancel", "reschedule", "status", "gyno", "gynec", "gynecologist",
     "pregnancy", "period", "pcos", "fertility", "ivf", "scan", "ultrasound", "patient",
+    "emergency", "pain", "bleeding", "labour", "delivery", "urgent", "problem", "dard",
+    "report", "prescription", "medicine", "health", "checkup", "sick", "unwell",
     "अपॉइंटमेंट", "बुक", "स्लॉट", "फीस", "डॉक्टर", "दीपिका", "क्लिनिक", "पता",
     "समय", "रद्द", "गर्भ", "पीरियड", "नाम", "बजे", "कल", "परसों", "आज",
+    "एमरजन्सी", "इमरजेंसी", "दर्द", "खून", "पेट", "बीमार", "समस्या", "जल्दी",
+    "रिपोर्ट", "दवा", "जाँच", "दिखाना",
 }
 
 UNRELATED_TOPIC_HINTS = {

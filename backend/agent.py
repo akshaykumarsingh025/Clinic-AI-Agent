@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import re
 from typing import Any, Optional
 
@@ -19,6 +20,8 @@ from backend.nlu import (
     parse_date_from_text,
     parse_time_from_text,
 )
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """You are Priya, a warm and friendly appointment booking assistant at {clinic_name}.
 You speak like a real person on WhatsApp — short messages, natural tone, no robotic lists.
@@ -406,7 +409,7 @@ async def get_ai_response(
 
     try:
         def _ollama_chat(msgs):
-            client = ollama.Client(host=settings.OLLAMA_HOST)
+            client = ollama.Client(host=settings.OLLAMA_HOST, timeout=120)
             return client.chat(
                 model=settings.OLLAMA_MODEL,
                 messages=msgs,
@@ -416,6 +419,7 @@ async def get_ai_response(
         response = await asyncio.to_thread(_ollama_chat, messages)
         raw = response["message"]["content"].strip()
     except Exception as e:
+        logger.error(f"Ollama call failed for {phone}: {e}")
         fallback = {
             "intent": "UNKNOWN",
             "patient_name": None,

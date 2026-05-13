@@ -133,8 +133,8 @@ async def read_image(image_path: str, context: str = "general") -> dict:
             b64 = _encode_image(img_path)
 
             def _ollama_read(b64_data, prompt_text):
-                client = ollama.Client(host=settings.OLLAMA_HOST)
-                return client.chat(
+                c = ollama.Client(host=settings.OLLAMA_HOST, timeout=120)
+                return c.chat(
                     model=settings.OLLAMA_VISION_MODEL or settings.OLLAMA_MODEL,
                     messages=[
                         {
@@ -146,6 +146,7 @@ async def read_image(image_path: str, context: str = "general") -> dict:
                     options={"temperature": 0.1, "num_predict": 1024},
                 )
 
+            import asyncio
             response = await asyncio.to_thread(_ollama_read, b64, prompt)
             raw = response["message"]["content"].strip()
             import re
@@ -181,7 +182,7 @@ async def classify_image_type(image_path: str) -> str:
         b64 = _encode_image(image_path)
 
         def _ollama_classify(b64_data):
-            client = ollama.Client(host=settings.OLLAMA_HOST)
+            client = ollama.Client(host=settings.OLLAMA_HOST, timeout=60)
             return client.chat(
                 model=settings.OLLAMA_VISION_MODEL or settings.OLLAMA_MODEL,
                 messages=[
