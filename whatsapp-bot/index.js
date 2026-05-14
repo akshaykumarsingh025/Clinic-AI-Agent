@@ -192,9 +192,26 @@ async function connectWhatsApp() {
             if (!msg.key || msg.key.fromMe) return;
             if (!msg.message) return;
 
-            if (msg.key.remoteJid.endsWith('@g.us')) return;
+            if (type !== 'notify') {
+                console.log(`[whatsapp] Ignoring non-notify message type: ${type}`);
+                return;
+            }
 
             const senderJid = msg.key.remoteJid;
+
+            if (senderJid.endsWith('@g.us') || senderJid.endsWith('@newsletter') || senderJid.endsWith('@broadcast')) {
+                console.log(`[whatsapp] Ignoring group/newsletter/broadcast: ${senderJid}`);
+                return;
+            }
+
+            const IGNORE_MESSAGE_TYPES = ['protocolMessage', 'reactionMessage', 'stickerMessage', 'contactMessage', 'contactsArrayMessage', 'locationMessage', 'liveLocationMessage'];
+            const msgKeys = Object.keys(msg.message);
+            const isOnlyIgnored = msgKeys.every(k => IGNORE_MESSAGE_TYPES.includes(k));
+            if (isOnlyIgnored) {
+                console.log(`[whatsapp] Ignoring non-content message types: ${msgKeys.join(', ')}`);
+                return;
+            }
+
             const phone = senderJid.split('@')[0];
 
             let messageText = '';
@@ -211,6 +228,12 @@ async function connectWhatsApp() {
                 messageText = buttonMap[selectedId] || selectedId;
             } else if (msg.message.listResponseMessage) {
                 messageText = msg.message.listResponseMessage.singleSelectReply.selectedRowId;
+            }
+
+            if (msg.message.imageMessage) {
+                if (!messageText && msg.message.imageMessage.caption) {
+                    messageText = msg.message.imageMessage.caption;
+                }
             }
 
             const audioMsg = msg.message.audioMessage || msg.message.voiceNoteMessage?.audioMessage;
@@ -238,17 +261,21 @@ async function connectWhatsApp() {
                 try {
                     const docPath = await downloadMedia(sock, msg);
                     console.log(`Document downloaded: ${docPath}`);
-                    const docLower = (docMsg.fileName || '').toLowerCase();
-                    if (docLower.endsWith('.pdf') || docLower.endsWith('.png') || docLower.endsWith('.jpg') || docLower.endsWith('.jpeg') || docLower.endsWith('.webp')) {
-                        imagePath = docPath;
-                    } else {
-                        imagePath = docPath;
-                    }
+                    imagePath = docPath;
                     if (!messageText) {
                         messageText = docMsg.caption || `[Patient sent a document: ${docMsg.fileName || 'file'}]`;
                     }
                 } catch (err) {
                     console.error('Failed to download document:', err);
+                }
+            }
+
+            const videoMsg = msg.message.videoMessage;
+            if (videoMsg) {
+                if (!messageText && videoMsg.caption) {
+                    messageText = videoMsg.caption;
+                } else if (!messageText) {
+                    messageText = '[Patient sent a video]';
                 }
             }
 

@@ -29,8 +29,14 @@ def _pdf_to_images(pdf_path: str) -> list[str]:
         logger.info(f"Converted PDF {pdf_path} to {len(image_paths)} images")
     except ImportError:
         logger.warning("pdf2image not installed, cannot convert PDF. Install: pip install pdf2image")
+        logger.warning("Also requires Poppler. Windows: https://github.com/oschwartz10612/poppler-windows/releases")
     except Exception as e:
-        logger.error(f"PDF to image conversion failed: {e}")
+        if "poppler" in str(e).lower() or "pdftoppm" in str(e).lower() or "pdfinfo" in str(e).lower():
+            logger.warning("Poppler not found. PDF support requires Poppler installed and in PATH.")
+            logger.warning("Windows: Download from https://github.com/oschwartz10612/poppler-windows/releases")
+            logger.warning("Extract and add the bin/ folder to your system PATH.")
+        else:
+            logger.error(f"PDF to image conversion failed: {e}")
     return image_paths
 
 
