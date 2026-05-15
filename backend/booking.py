@@ -149,6 +149,15 @@ def reschedule_appointment(appointment_id: int, new_date: str, new_time: str) ->
         new_date,
         new_time,
         appointment.get("reason"),
+        patient_age=appointment.get("patient_age"),
+        patient_location=appointment.get("patient_location"),
+        consultation_type=appointment.get("consultation_type"),
+        id_card=appointment.get("id_card"),
+        details=appointment.get("details_json"),
+        id_card_image_path=appointment.get("id_card_image_path"),
+        payment_status=appointment.get("payment_status"),
+        payment_screenshot_path=appointment.get("payment_screenshot_path"),
+        reports_data=appointment.get("reports_data_json"),
     )
     return True
 

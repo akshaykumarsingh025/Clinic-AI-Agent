@@ -31,8 +31,9 @@ class Settings:
         self.PIPER_BINARY: str = os.getenv("PIPER_BINARY", "piper")
         self.PIPER_VOICE: str = os.getenv("PIPER_VOICE", "./voices/en_IN-female-medium.onnx")
         self.AUDIO_CACHE_DIR: str = os.getenv("AUDIO_CACHE_DIR", "./audio_cache")
-        self.SEND_AUDIO_REPLIES_FOR_TEXT: bool = os.getenv("SEND_AUDIO_REPLIES_FOR_TEXT", "false").lower() in ("1", "true", "yes", "on")
-        self.TTS_PROVIDER: str = os.getenv("TTS_PROVIDER", "piper")
+        self.SEND_AUDIO_REPLIES_FOR_TEXT: bool = os.getenv("SEND_AUDIO_REPLIES_FOR_TEXT", "true").lower() in ("1", "true", "yes", "on")
+        self.TTS_PROVIDER: str = os.getenv("TTS_PROVIDER", "auto")  # auto|piper|voiceclone|qwen3|chatterbox
+        self.QWEN3_TTS_MODEL: str = os.getenv("QWEN3_TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-1.7B-Base")
         self.VOICECLONE_PROJECT_DIR: str = os.getenv("VOICECLONE_PROJECT_DIR", r"D:\Software\Projects\VoiceCloneReels")
         self.VOICECLONE_PYTHON: str = os.getenv("VOICECLONE_PYTHON", "")
         self.VOICECLONE_VOICE_SAMPLE: str = os.getenv("VOICECLONE_VOICE_SAMPLE", "")
@@ -53,6 +54,7 @@ class Settings:
         self.GOOGLE_SHEET_GID: int = int(os.getenv("GOOGLE_SHEET_GID", "0")) if os.getenv("GOOGLE_SHEET_GID", "") != "" else None
         self.GOOGLE_SERVICE_ACCOUNT_JSON: str = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "") or str(Path(__file__).parent.parent / "googlekey" / "service_account.json")
         self.GOOGLE_CALENDAR_ID: str = os.getenv("GOOGLE_CALENDAR_ID", "primary")
+        self.GOOGLE_DRIVE_FOLDER_ID: str = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "")
 
     @property
     def WORKING_DAY_INDICES(self) -> set[int]:

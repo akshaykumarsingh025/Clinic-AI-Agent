@@ -18,28 +18,34 @@ def _get_whisper_model():
             raise ImportError("numpy is required for Whisper. Run: pip install numpy")
 
         import whisper
-        _whisper_model = whisper.load_model("small")
-        logger.info("Whisper model loaded (small)")
+        _whisper_model = whisper.load_model("medium")
+        logger.info("Whisper model loaded (medium)")
     return _whisper_model
 
 
 async def convert_audio_format(input_path: str) -> str:
+    """Convert any audio format to 16kHz mono WAV for Whisper."""
     output_path = input_path.rsplit(".", 1)[0] + "_converted.wav"
 
     if os.path.exists(output_path):
         return output_path
 
-    proc = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-i", input_path, "-ar", "16000", "-ac", "1", "-y", output_path,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await proc.communicate()
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-i", input_path, "-ar", "16000", "-ac", "1", "-y", output_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
 
-    if proc.returncode != 0:
-        raise RuntimeError(f"ffmpeg conversion failed: {stderr.decode()[:200]}")
+        if proc.returncode != 0:
+            logger.warning(f"ffmpeg conversion failed, using original: {stderr.decode()[:200]}")
+            return input_path
 
-    return output_path
+        return output_path
+    except Exception as e:
+        logger.warning(f"ffmpeg not available, using original file: {e}")
+        return input_path
 
 
 def _detect_language_hint(text: str) -> Optional[str]:
@@ -56,10 +62,14 @@ async def transcribe_audio(audio_path: str) -> tuple[str, Optional[str]]:
 
     model = _get_whisper_model()
 
+    # Convert OGG to WAV first for better recognition
+    converted_path = await convert_audio_format(audio_path)
+
     result = model.transcribe(
-        audio_path,
+        converted_path,
         language=None,
         task="transcribe",
+        fp16=False,
     )
 
     text = result["text"].strip()

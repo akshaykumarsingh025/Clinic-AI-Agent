@@ -19,6 +19,7 @@ from backend.database import (
     update_followup_response,
     get_patient_appointments,
     get_appointment_by_id,
+    get_appointments,
 )
 
 logger = logging.getLogger(__name__)
@@ -218,6 +219,37 @@ async def run_no_show_scan():
         except Exception as e:
             logger.error(f"Error in no-show scan for appointment {appt.get('id')}: {e}")
 
+async def send_daily_summary():
+    """Send morning summary of today's appointments to the doctor."""
+    from backend.whatsapp_sender import send_text
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    appointments = get_appointments(today)
+
+    if not appointments:
+        return
+
+    booked = [a for a in appointments if a["status"] in ("booked", "confirmed")]
+    checked_in = [a for a in appointments if a["status"] == "checked_in"]
+
+    summary = f"Good morning! Today's summary ({today}):\n"
+    summary += f"Total appointments: {len(booked) + len(checked_in)}\n"
+    if booked:
+        summary += "\nUpcoming:\n"
+        for a in booked:
+            summary += f"  {a['time']} - {a['patient_name']} ({a.get('reason', 'consultation')})\n"
+    if checked_in:
+        summary += f"\nAlready checked in: {len(checked_in)}\n"
+
+    try:
+        doctor_phone = settings.DOCTOR_PHONE
+        if doctor_phone:
+            await send_text(doctor_phone, summary)
+            logger.info(f"Daily summary sent to doctor ({len(appointments)} appointments)")
+    except Exception as e:
+        logger.error(f"Failed to send daily summary: {e}")
+
+
 async def cleanup_audio_cache():
     logger.info("Running audio cache cleanup...")
     cache_dir = settings.AUDIO_CACHE_DIR
@@ -262,6 +294,13 @@ def init_scheduler():
         cleanup_audio_cache,
         trigger=CronTrigger(hour=3, minute=0), # Run daily at 3 AM
         id="cleanup_audio_cache",
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
+        send_daily_summary,
+        trigger=CronTrigger(hour=8, minute=30), # Daily at 8:30 AM
+        id="daily_summary",
         replace_existing=True,
     )
 

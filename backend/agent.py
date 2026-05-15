@@ -56,13 +56,13 @@ YOUR PERSONALITY:
 - If someone is unsure, gently encourage them, don't force
 
 LANGUAGE RULES:
-- If patient writes in English → reply in English only
-- If patient writes in Hindi/Hinglish → reply in Hinglish (Hindi in English letters)
+- If patient writes or speaks in English → reply in English only
+- If patient writes or speaks in Hindi/Hinglish → reply in Hinglish (Hindi in English letters) for text, but provide the exact same message in proper Hindi using Devanagari script for the voice assistant in the audio_script field
 - Match their vibe and style
 - Speak naturally, not like a robot reading a script
 
 ABOUT DR. DEEPIKA — USE THIS TO CONVINCE PATIENTS:
-- Dr. Deepika Singh is a senior gynecologist with years of experience from AIIMS — one of India's top medical institutes
+- Dr Deepika is a senior gynecologist with years of experience from AIIMS — one of India's top medical institutes
 - She is now practicing independently, bringing that top-level AIIMS expertise to her own clinic
 - Finding a doctor with her level of knowledge, training, and experience is very rare
 - She is the best choice for any gynecological concern — patients are in the safest hands with her
@@ -138,6 +138,13 @@ WHAT YOU DO:
 - Never diagnose, prescribe, or give medical advice
 - If someone is here for business → be professional, address their query, don't push medical booking
 
+STAFF MESSAGES:
+- Messages marked [Staff message] were sent by clinic staff directly from the WhatsApp number
+- If the staff already answered a patient's question, don't repeat or contradict it
+- If the staff confirmed an appointment, acknowledge it and move on
+- If the staff said something, defer to the staff's version — don't second-guess
+- Staff messages are context for you to be aware of, not messages from the patient
+
 UNDERSTANDING PATIENT INTENT (VERY IMPORTANT):
 Patients don't always say "reschedule" directly. Understand INDIRECT requests:
 - "Mai parso nhi aapauga" / "I can't come day after tomorrow" = RESCHEDULE (they want a different date)
@@ -206,7 +213,8 @@ Respond ONLY in this JSON (no markdown, no extra text):
   "payment_pending": true or false,
   "no_show_response_type": "reschedule|found_doctor|callback|unwell|null",
   "language": "hinglish|english",
-  "reply": "Your natural WhatsApp message to the patient"
+  "reply": "Your natural WhatsApp message to the patient (in English or Hinglish)",
+  "audio_script": "If language is hinglish, write the exact same reply in proper Hindi using Devanagari script for the voice assistant. Otherwise empty."
 }}"""
 
 
@@ -401,7 +409,10 @@ async def get_ai_response(
         messages.append({"role": "system", "content": img_summary})
 
     for msg in history:
-        messages.append({"role": msg["role"], "content": msg["content"]})
+        content = msg["content"]
+        if msg.get("sender_type") == "staff":
+            content = f"[Staff message - sent by clinic staff directly]: {content}"
+        messages.append({"role": msg["role"], "content": content})
 
     messages.append({"role": "user", "content": user_message})
 
@@ -437,7 +448,8 @@ async def get_ai_response(
             "booking_ready": False,
             "payment_pending": False,
             "no_show_response_type": None,
-            "language": detected_language,
+            "language": detected_language if detected_language != "hindi" else "hinglish",
+            "audio_script": None,
             "technical_error": str(e),
             "reply": "I'm sorry, I'm having trouble right now. Please try again in a moment.",
         }
@@ -511,6 +523,7 @@ def _parse_ai_response(raw: str) -> dict:
                     "no_show_response_type": data.get("no_show_response_type"),
                     "language": data.get("language", "english"),
                     "reply": clean_patient_reply(data.get("reply", ""), data.get("language", "english")),
+                    "audio_script": data.get("audio_script", ""),
                 }
         except json.JSONDecodeError:
             pass
@@ -534,5 +547,6 @@ def _parse_ai_response(raw: str) -> dict:
         "payment_pending": False,
         "no_show_response_type": None,
         "language": "english",
+        "audio_script": None,
         "reply": clean_patient_reply(raw if raw else "I'm sorry, could you please repeat that?"),
     }

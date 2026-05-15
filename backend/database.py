@@ -84,6 +84,7 @@ def init_db():
             phone TEXT NOT NULL,
             role TEXT NOT NULL,
             content TEXT NOT NULL,
+            sender_type TEXT DEFAULT 'patient',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
@@ -125,6 +126,7 @@ def init_db():
     _ensure_column(conn, "appointments", "payment_status", "TEXT DEFAULT 'pending'")
     _ensure_column(conn, "appointments", "payment_screenshot_path", "TEXT")
     _ensure_column(conn, "appointments", "reports_data_json", "TEXT")
+    _ensure_column(conn, "conversations", "sender_type", "TEXT DEFAULT 'patient'")
 
     conn.commit()
     conn.close()
@@ -369,12 +371,12 @@ def get_past_unconfirmed(minutes_ago: int = 45) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def save_conversation(phone: str, role: str, content: str):
+def save_conversation(phone: str, role: str, content: str, sender_type: str = 'patient'):
     conn = get_db()
     try:
         conn.execute(
-            "INSERT INTO conversations (phone, role, content) VALUES (?, ?, ?)",
-            (phone, role, content),
+            "INSERT INTO conversations (phone, role, content, sender_type) VALUES (?, ?, ?, ?)",
+            (phone, role, content, sender_type),
         )
         conn.commit()
     finally:
@@ -385,7 +387,7 @@ def get_conversation_history(phone: str, limit: int = 10) -> list[dict]:
     conn = get_db()
     try:
         rows = conn.execute(
-            "SELECT role, content FROM conversations WHERE phone = ? ORDER BY id DESC LIMIT ?",
+            "SELECT role, content, sender_type FROM conversations WHERE phone = ? ORDER BY id DESC LIMIT ?",
             (phone, limit),
         ).fetchall()
         return [dict(r) for r in reversed(rows)]

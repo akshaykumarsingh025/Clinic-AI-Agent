@@ -64,8 +64,8 @@ DEFAULTS = {
     "FASTAPI_HOST": "0.0.0.0",
     "FASTAPI_PORT": "8000",
     "WHATSAPP_BOT_URL": "http://localhost:3001",
-    "TTS_PROVIDER": "piper",
-    "SEND_AUDIO_REPLIES_FOR_TEXT": "false",
+    "TTS_PROVIDER": "auto",
+    "SEND_AUDIO_REPLIES_FOR_TEXT": "true",
     "PIPER_BINARY": "piper",
     "PIPER_VOICE": "./voices/en_IN-female-medium.onnx",
     "VOICECLONE_PROJECT_DIR": "D:/Software/Projects/VoiceCloneReels",
@@ -247,7 +247,7 @@ class ClinicControlApp(Tk):
         ttk.Label(voice, text="TTS provider").grid(row=0, column=0, sticky="w", padx=6, pady=5)
         provider = StringVar(value=self.env_values.get("TTS_PROVIDER", "piper"))
         self.vars["TTS_PROVIDER"] = provider
-        ttk.Combobox(voice, textvariable=provider, values=["piper", "voiceclone"], state="readonly", width=20).grid(row=0, column=1, sticky="w", padx=6, pady=5)
+        ttk.Combobox(voice, textvariable=provider, values=["auto", "chatterbox", "qwen3", "voiceclone", "piper"], state="readonly", width=25).grid(row=0, column=1, sticky="w", padx=6, pady=5)
 
         audio_text = BooleanVar(value=self.env_values.get("SEND_AUDIO_REPLIES_FOR_TEXT", "false").lower() in ("1", "true", "yes", "on"))
         self.vars["SEND_AUDIO_REPLIES_FOR_TEXT"] = audio_text
@@ -307,6 +307,15 @@ class ClinicControlApp(Tk):
         ttk.Button(actions, text="Open Export", command=self.open_latest_export).pack(side="left", padx=5)
         ttk.Button(actions, text="Sync Google Sheet", command=self.sync_google_sheet).pack(side="left", padx=5)
 
+        # Search box
+        search_frame = ttk.Frame(self.appointments_tab)
+        search_frame.pack(fill="x", padx=10, pady=(0, 5))
+        ttk.Label(search_frame, text="Search:").pack(side="left", padx=(0, 5))
+        self.search_var = StringVar()
+        self.search_var.trace_add("write", lambda *_: self._filter_appointments())
+        ttk.Entry(search_frame, textvariable=self.search_var, width=30).pack(side="left", padx=5)
+        ttk.Button(search_frame, text="Clear", command=lambda: self.search_var.set("")).pack(side="left", padx=5)
+
         columns = ("id", "date", "time", "name", "phone", "status", "reason", "id_card")
         self.appointment_tree = ttk.Treeview(self.appointments_tab, columns=columns, show="headings")
         headings = {
@@ -345,10 +354,19 @@ class ClinicControlApp(Tk):
 
     def save_settings(self, show_message: bool = True):
         values = self._collect_settings()
+        old_model = self.env_values.get("OLLAMA_MODEL", "")
+        new_model = values.get("OLLAMA_MODEL", "")
         save_env(values)
         self.env_values = values
         if show_message:
             messagebox.showinfo("Saved", "Settings saved. Restart backend/bot for running services to use new values.")
+        # Auto-restart backend if model changed
+        if old_model != new_model and self.backend_proc and self.backend_proc.poll() is None:
+            if show_message:
+                self._log(f"Model changed from {old_model} to {new_model}. Restarting backend...")
+            self.stop_backend()
+            import time; time.sleep(2)
+            self.start_backend()
 
     def reload_settings(self):
         self.env_values = load_env()
@@ -457,6 +475,7 @@ class ClinicControlApp(Tk):
                         if resp.status == 200:
                             self._log("Backend is healthy. Starting WhatsApp bot...")
                             self.after(0, self.start_bot)
+                            self.after(1000, self._start_watchdog)
                             return
                 except Exception:
                     pass
@@ -464,6 +483,7 @@ class ClinicControlApp(Tk):
                 time.sleep(1)
             self._log("Backend did not become healthy after 30s. Starting bot anyway...")
             self.after(0, self.start_bot)
+            self.after(1000, self._start_watchdog)
         threading.Thread(target=_wait_and_start_bot, daemon=True).start()
 
     def _stop_process(self, name: str, proc: subprocess.Popen | None):
@@ -486,8 +506,42 @@ class ClinicControlApp(Tk):
         self.bot_status.set("WhatsApp: stopped")
 
     def stop_all(self):
+        self._watchdog_active = False
         self.stop_bot()
         self.stop_backend()
+
+    def _watchdog(self):
+        """Auto-restart crashed services every 10 seconds. Stops after 3 consecutive failures."""
+        if not getattr(self, "_watchdog_active", False):
+            return
+        max_restarts = 3
+        if self.backend_proc and self.backend_proc.poll() is not None:
+            restarts = getattr(self, "_backend_restarts", 0) + 1
+            self._backend_restarts = restarts
+            if restarts <= max_restarts:
+                self._log(f"Backend crashed! Auto-restarting ({restarts}/{max_restarts})...")
+                self.start_backend()
+            else:
+                self._log("Backend keeps crashing. Stopped auto-restart. Click Start Backend to retry.")
+        else:
+            self._backend_restarts = 0
+
+        if self.bot_proc and self.bot_proc.poll() is not None:
+            restarts = getattr(self, "_bot_restarts", 0) + 1
+            self._bot_restarts = restarts
+            if restarts <= max_restarts:
+                self._log(f"WhatsApp bot crashed! Auto-restarting ({restarts}/{max_restarts})...")
+                self.start_bot()
+            else:
+                self._log("WhatsApp bot keeps crashing. Stopped auto-restart. Click Start Bot to retry.")
+        else:
+            self._bot_restarts = 0
+
+        self.after(10000, self._watchdog)
+
+    def _start_watchdog(self):
+        self._watchdog_active = True
+        self._watchdog()
 
     def reset_whatsapp_login(self):
         confirmed = messagebox.askyesno(
@@ -540,6 +594,38 @@ class ClinicControlApp(Tk):
             return
 
         for appt in appointments:
+            self.appointment_tree.insert(
+                "",
+                "end",
+                values=(
+                    appt.get("id", ""),
+                    appt.get("date", ""),
+                    appt.get("time", ""),
+                    appt.get("patient_name", ""),
+                    appt.get("phone", ""),
+                    appt.get("status", ""),
+                    appt.get("reason", "") or "",
+                    appt.get("id_card", "") or appt.get("patient_record_id_card", "") or "",
+                ),
+            )
+
+    def _filter_appointments(self):
+        """Filter appointments by search text (name or phone)."""
+        query = self.search_var.get().strip().lower()
+        for row in self.appointment_tree.get_children():
+            self.appointment_tree.delete(row)
+        try:
+            from backend.database import get_all_appointments, init_db
+            init_db()
+            appointments = get_all_appointments()
+        except Exception:
+            return
+
+        for appt in appointments:
+            name = (appt.get("patient_name", "") or "").lower()
+            phone = (appt.get("phone", "") or "").lower()
+            if query and query not in name and query not in phone:
+                continue
             self.appointment_tree.insert(
                 "",
                 "end",

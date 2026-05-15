@@ -1,14 +1,14 @@
 @echo off
 title Clinic AI Agent - Startup
 echo ============================================
-echo   Clinic AI Agent - Automatic Setup & Start
+echo   Clinic AI Agent - Automatic Setup ^& Start
 echo ============================================
 echo.
 
 cd /d %~dp0
 
 :: ── Check Python ──────────────────────────────
-echo [1/6] Checking Python...
+echo [1/8] Checking Python...
 python --version >nul 2>&1
 if %errorlevel% neq 0 (
     echo ERROR: Python is not installed or not in PATH.
@@ -21,7 +21,7 @@ python --version
 echo.
 
 :: ── Check Node.js ──────────────────────────────
-echo [2/6] Checking Node.js...
+echo [2/8] Checking Node.js...
 node --version >nul 2>&1
 if %errorlevel% neq 0 (
     echo ERROR: Node.js is not installed or not in PATH.
@@ -32,46 +32,64 @@ if %errorlevel% neq 0 (
 node --version
 echo.
 
+:: ── Check FFmpeg ────────────────────────────────
+echo [3/8] Checking FFmpeg...
+ffmpeg -version >nul 2>&1
+if %errorlevel% neq 0 (
+    echo WARNING: FFmpeg not found. Voice messages will not work.
+    echo Download: https://www.gyan.dev/ffmpeg/builds/
+    echo.
+) else (
+    echo FFmpeg found.
+)
+echo.
+
 :: ── Create directories ─────────────────────────
-echo [3/6] Creating required directories...
+echo [4/8] Creating required directories...
 if not exist "database" mkdir database
 if not exist "logs" mkdir logs
+if not exist "audio_cache" mkdir audio_cache
 if not exist "audio_cache\incoming" mkdir audio_cache\incoming
 if not exist "audio_cache\id_cards" mkdir audio_cache\id_cards
 if not exist "exports" mkdir exports
 if not exist "static" mkdir static
 if not exist "voices" mkdir voices
+if not exist "voices\hindi" mkdir voices\hindi
+if not exist "voices\english" mkdir voices\english
+if not exist "googlekey" mkdir googlekey
 echo Directories ready.
 echo.
 
 :: ── Install Python dependencies ─────────────────
-echo [4/6] Installing Python dependencies...
-pip install -r requirements.txt
+echo [5/8] Installing Python dependencies...
+pip install -r requirements.txt -q
 if %errorlevel% neq 0 (
     echo WARNING: Some Python packages failed to install.
-    echo The app will try to run anyway.
-    echo.
-    echo NOTE: pdf2image requires Poppler for PDF reading.
-    echo   Download from: https://github.com/oschwartz10612/poppler-windows/releases
-    echo   Extract and add the bin folder to your PATH.
-    echo   PDF support will be skipped if Poppler is not installed.
-    echo.
+    echo Retrying...
+    pip install -r requirements.txt
 )
 echo.
 
+:: ── Install TTS packages ────────────────────────
+echo [6/8] Installing TTS packages...
+pip install chatterbox-tts --no-deps -q 2>nul
+pip install qwen-tts --no-deps -q 2>nul
+echo TTS packages ready.
+echo.
+
 :: ── Install Node.js dependencies ─────────────────
-echo [5/6] Installing WhatsApp bot dependencies...
+echo [7/8] Installing WhatsApp bot dependencies...
 cd whatsapp-bot
-call npm install
+call npm install --silent 2>nul
 if %errorlevel% neq 0 (
-    echo WARNING: npm install failed. Trying again...
+    echo WARNING: npm install failed. Retrying...
     call npm install
 )
 cd ..
 echo.
 
 :: ── Check .env file ────────────────────────────
-echo [6/6] Checking configuration...
+echo [8/8] Checking configuration...
 if not exist ".env" (
     echo WARNING: .env file not found! Creating from .env.example...
     if exist ".env.example" (
@@ -79,8 +97,19 @@ if not exist ".env" (
         echo Created .env from .env.example. Please edit it with your settings.
     ) else (
         echo ERROR: No .env file found. Please create one.
+        pause
+        exit /b 1
     )
 )
+
+:: Check Google OAuth token for Drive uploads
+if not exist "googlekey\oauth_token.json" (
+    if exist "googlekey\oauth_credentials.json" (
+        echo Running Google Drive OAuth2 setup...
+        python setup_drive_auth.py
+    )
+)
+
 echo.
 
 :: ── Start services ─────────────────────────────

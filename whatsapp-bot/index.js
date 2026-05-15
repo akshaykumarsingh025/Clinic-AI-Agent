@@ -42,6 +42,23 @@ function recordDecryptionFail() {
     }
 }
 
+function cleanupOldBackups() {
+    try {
+        const backupDirs = fs.readdirSync(__dirname)
+            .filter(d => d.startsWith('auth_info_backup_'))
+            .sort()
+            .reverse();
+        // Keep only last 3 backups
+        for (const dir of backupDirs.slice(3)) {
+            const dirPath = path.join(__dirname, dir);
+            fs.rmSync(dirPath, { recursive: true, force: true });
+            console.log(`[whatsapp] Cleaned up old backup: ${dir}`);
+        }
+    } catch (err) {
+        console.error('[whatsapp] Backup cleanup error:', err.message);
+    }
+}
+
 function startKeepalive() {
     stopKeepalive();
     if (!KEEPALIVE_PHONE) return;
@@ -181,23 +198,45 @@ async function connectWhatsApp() {
                 connectionStatus = 'open';
                 decryptionFails = [];
                 startKeepalive();
+                cleanupOldBackups();
                 console.log('WhatsApp bot connected!');
             }
         });
 
         sock.ev.on('messages.upsert', async ({ messages, type }) => {
             const msg = messages[0];
-            console.log(`[whatsapp] Message upsert: type=${type}, fromMe=${msg.key?.fromMe}, remoteJid=${msg.key?.remoteJid}, hasMessage=${!!msg.message}`);
+            const senderJid = msg.key?.remoteJid;
+            console.log(`[whatsapp] Message upsert: type=${type}, fromMe=${msg.key?.fromMe}, remoteJid=${senderJid}, hasMessage=${!!msg.message}`);
 
-            if (!msg.key || msg.key.fromMe) return;
             if (!msg.message) return;
+
+            // Track staff messages (fromMe=true) for AI context
+            if (msg.key.fromMe) {
+                let staffText = '';
+                if (msg.message.conversation) {
+                    staffText = msg.message.conversation;
+                } else if (msg.message.extendedTextMessage) {
+                    staffText = msg.message.extendedTextMessage.text;
+                }
+                if (staffText && senderJid && !senderJid.endsWith('@g.us')) {
+                    const staffPhone = senderJid.split('@')[0];
+                    try {
+                        await axios.post(`${FASTAPI_URL}/webhook/staff-message`, {
+                            phone: staffPhone,
+                            message_text: staffText,
+                        }, { timeout: 5000 });
+                        console.log(`[whatsapp] Staff message tracked for ${staffPhone}: "${staffText.substring(0, 50)}"`);
+                    } catch (err) {
+                        console.error('[whatsapp] Failed to track staff message:', err.message);
+                    }
+                }
+                return;
+            }
 
             if (type !== 'notify') {
                 console.log(`[whatsapp] Ignoring non-notify message type: ${type}`);
                 return;
             }
-
-            const senderJid = msg.key.remoteJid;
 
             if (senderJid.endsWith('@g.us') || senderJid.endsWith('@newsletter') || senderJid.endsWith('@broadcast')) {
                 console.log(`[whatsapp] Ignoring group/newsletter/broadcast: ${senderJid}`);
@@ -305,8 +344,8 @@ async function connectWhatsApp() {
                                 button_number: parseInt(messageText.trim()),
                             }, { timeout: 30000 });
                         } else {
-                            // Image/audio messages need more time (Ollama vision + AI processing)
-                            const reqTimeout = (imagePath || audioPath) ? 180000 : 90000;
+                            // TTS generation can take a long time on some systems
+                            const reqTimeout = 600000; // 10 minutes
                             response = await axios.post(`${FASTAPI_URL}/webhook/message`, {
                                 phone: phone,
                                 message_text: messageText || null,
@@ -318,7 +357,7 @@ async function connectWhatsApp() {
                         break;
                     } catch (retryErr) {
                         lastErr = retryErr;
-                        const isConnErr = retryErr.code === 'ECONNREFUSED' || retryErr.code === 'ETIMEDOUT' || retryErr.code === 'ECONNRESET';
+                        const isConnErr = retryErr.code === 'ECONNREFUSED' || retryErr.code === 'ETIMEDOUT' || retryErr.code === 'ECONNRESET' || retryErr.code === 'ECONNABORTED';
                         if (isConnErr && attempt < maxRetries) {
                             console.log(`[whatsapp] Retry ${attempt}/${maxRetries} for ${phone}...`);
                             await new Promise(r => setTimeout(r, 2000 * attempt));
@@ -340,18 +379,25 @@ async function connectWhatsApp() {
                     const { text_reply, audio_path: reply_audio } = response.data;
                     console.log(`Backend response: text_reply="${text_reply}", audio_path="${reply_audio}"`);
 
+                    let textSent = false;
                     if (text_reply) {
                         console.log(`Attempting to send text to ${senderJid}...`);
                         await sock.sendPresenceUpdate('paused', senderJid).catch(() => {});
                         await sendText(sock, senderJid, text_reply);
                         console.log(`Successfully sent text to ${senderJid}`);
+                        textSent = true;
                     }
 
                     if (reply_audio) {
-                        console.log(`Attempting to send audio to ${senderJid}...`);
-                        await sock.sendPresenceUpdate('paused', senderJid).catch(() => {});
-                        await sendAudio(sock, senderJid, reply_audio);
-                        console.log(`Successfully sent audio to ${senderJid}`);
+                        try {
+                            console.log(`Attempting to send audio to ${senderJid}...`);
+                            await sock.sendPresenceUpdate('composing', senderJid).catch(() => {});
+                            await sendAudio(sock, senderJid, reply_audio);
+                            console.log(`Successfully sent audio to ${senderJid}`);
+                        } catch (audioErr) {
+                            console.error(`Failed to send audio to ${senderJid}:`, audioErr.message);
+                            // Text was already sent, don't send another error message
+                        }
                     }
                 }
             } catch (err) {
@@ -363,7 +409,7 @@ async function connectWhatsApp() {
                 console.error('Error processing message:', errDetail);
                 try {
                     await sock.sendPresenceUpdate('paused', senderJid).catch(() => {});
-                    await sendText(sock, senderJid, "I'm having trouble right now. Please try again in a moment.");
+                    await sendText(sock, senderJid, "Please allow me some time, I will get back to you shortly.");
                 } catch (sendErr) {
                     console.error('Failed to send error message:', sendErr.message);
                 }

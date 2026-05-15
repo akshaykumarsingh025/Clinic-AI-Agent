@@ -10,7 +10,7 @@ import httpx
 import ollama
 from pydantic import BaseModel
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 
@@ -94,11 +94,18 @@ app = FastAPI(title="Clinic AI Agent", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:3001", "http://localhost:8000", "http://127.0.0.1:8000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+async def verify_api_key(x_api_key: str = Header(None)):
+    """Simple API key check for sensitive endpoints."""
+    expected = os.getenv("API_KEY", "")
+    if expected and x_api_key != expected:
+        raise HTTPException(status_code=403, detail="Invalid API key")
 
 
 @app.get("/health")
@@ -140,6 +147,29 @@ async def handle_message(payload: WebhookMessage):
 
         patient_record = get_patient(phone)
 
+        # Proactive greeting for brand new contacts with quick buttons
+        is_new_patient = patient_record is None and not incoming_audio and not incoming_file
+        greeting_sent = False
+        if is_new_patient and user_message.strip():
+            greeting = f"Namaste! Welcome to {settings.CLINIC_NAME}. I'm Priya, your appointment assistant. How can I help you today?"
+            try:
+                from backend.whatsapp_sender import send_button_message as whatsapp_send_buttons
+                await whatsapp_send_buttons(phone, greeting, [
+                    "Book Appointment",
+                    "Check Status",
+                    "Cancel Appointment",
+                    "Talk to Doctor",
+                ])
+                greeting_sent = True
+            except Exception as greet_err:
+                logger.warning(f"Failed to send greeting to {phone}: {greet_err}")
+                try:
+                    from backend.whatsapp_sender import send_text as whatsapp_send_text
+                    await whatsapp_send_text(phone, greeting)
+                    greeting_sent = True
+                except Exception:
+                    pass
+
         if incoming_file and image_path and os.path.exists(image_path):
             file_ext = os.path.splitext(image_path)[1].lower()
             logger.info(f"File received from {phone}: {image_path} (type: {file_ext})")
@@ -169,8 +199,12 @@ async def handle_message(payload: WebhookMessage):
                         if active_for_reports:
                             appt = active_for_reports[-1]
                             update_appointment_reports(appt["id"], img_data)
+                        asyncio.get_event_loop().run_in_executor(None, _sync_sheet_background)
                         if not user_message.strip():
                             user_message = f"[Patient sent {img_type} image]"
+                    # Trigger sheet sync for ID card uploads too
+                    if img_type == "id_card":
+                        asyncio.get_event_loop().run_in_executor(None, _sync_sheet_background)
                 else:
                     img_type = "general"
             except Exception as img_err:
@@ -200,10 +234,11 @@ async def handle_message(payload: WebhookMessage):
             audio_reply_path = None
             if incoming_audio:
                 try:
-                    audio_reply_path = await generate_voice_reply(reply_text, language=language)
+                    tts_text = "मैं डॉ दीपिका सिंह क्लिनिक के अपॉइंटमेंट्स, स्लॉट, फीस, टाइमिंग, पता और बुकिंग में मदद करने के लिए हूँ। अपॉइंटमेंट से संबंधित कोई सवाल हो तो बताएं, मैं आपकी मदद करूंगी।" if language == "hinglish" else reply_text
+                    audio_reply_path = await generate_voice_reply(tts_text, language=language)
                 except Exception:
                     audio_reply_path = None
-            return {"text_reply": reply_text, "audio_path": audio_reply_path}
+            return {"text_reply": reply_text, "audio_path": os.path.abspath(audio_reply_path) if audio_reply_path else None}
 
         # ── Returning patient context ──────────────────────────────
         active_appts = [
@@ -240,6 +275,7 @@ async def handle_message(payload: WebhookMessage):
 
         language = ai_result.get("language") or language
         reply_text = clean_patient_reply(ai_result.get("reply", "How can I help you?"), language)
+        audio_script = ai_result.get("audio_script")
         audio_reply_path = None
 
         intent = ai_result.get("intent", "UNKNOWN")
@@ -356,6 +392,7 @@ async def handle_message(payload: WebhookMessage):
             if cancelled:
                 reply_text = "Your appointment has been cancelled. If you'd like to book again, just let me know!"
                 clear_old_conversations(phone)
+                asyncio.get_event_loop().run_in_executor(None, _sync_sheet_background)
             else:
                 reply_text = "I couldn't find an active appointment to cancel. Could you share the date?"
 
@@ -374,6 +411,7 @@ async def handle_message(payload: WebhookMessage):
                         schedule_appointment_reminders(new_appt)
                         schedule_no_show_check(new_appt)
                         clear_old_conversations(phone)
+                        asyncio.get_event_loop().run_in_executor(None, _sync_sheet_background)
                     else:
                         reply_text = "Sorry, couldn't reschedule. Would you like to try a different time?"
             elif active_appts:
@@ -419,14 +457,50 @@ async def handle_message(payload: WebhookMessage):
 
         reply_text = clean_patient_reply(reply_text, language)
 
-        if incoming_audio or settings.SEND_AUDIO_REPLIES_FOR_TEXT:
+        # Audio reply logic:
+        # - Patient sent voice note → reply with text + audio
+        # - Patient asks for a call / emergency → reply with text + audio
+        # - Patient sent text → reply with text only
+        send_audio = False
+        if incoming_audio:
+            send_audio = True
+            logger.info(f"Patient sent audio, will generate voice reply for {phone}")
+        elif intent in ("EMERGENCY",):
+            send_audio = True
+        elif user_message and any(w in user_message.lower() for w in ["call", "phone", "ring", "bolna", "baat", "talk"]):
+            send_audio = True
+
+        if send_audio:
             try:
-                audio_reply_path = await generate_voice_reply(reply_text, language=language)
-            except Exception:
+                tts_text = audio_script if audio_script and language == "hinglish" else reply_text
+                logger.info(f"Generating voice reply for {phone} (lang={language}, provider={settings.TTS_PROVIDER})")
+                audio_reply_path = await generate_voice_reply(tts_text, language=language)
+                if audio_reply_path:
+                    logger.info(f"Voice reply generated: {audio_reply_path}")
+                else:
+                    logger.warning(f"Voice reply returned None for {phone}")
+            except Exception as e:
+                logger.error(f"Voice reply failed for {phone}: {e}")
                 audio_reply_path = None
 
-        logger.info(f"Final reply for {phone}: text_reply='{reply_text}', audio_path='{audio_reply_path}'")
+        # Convert to absolute path so WhatsApp bot (running from whatsapp-bot/) can find the file
+        if audio_reply_path:
+            audio_reply_path = os.path.abspath(audio_reply_path)
+
+        logger.info(f"Final reply for {phone}: text_reply='{reply_text[:50]}', audio_path='{audio_reply_path}'")
         return {"text_reply": reply_text, "audio_path": audio_reply_path}
+
+
+@app.post("/webhook/staff-message")
+async def handle_staff_message(payload: WebhookMessage):
+    """Track messages sent by clinic staff (fromMe=true in WhatsApp) so AI has context."""
+    phone = payload.phone
+    message_text = payload.message_text or ""
+    if not message_text.strip():
+        return {"status": "ignored"}
+    save_conversation(phone, "user", message_text, sender_type="staff")
+    logger.info(f"Staff message tracked for {phone}: {message_text[:80]}")
+    return {"status": "tracked"}
 
 
 @app.post("/webhook/button-reply")
@@ -454,6 +528,7 @@ async def handle_button_reply(payload: ButtonReply):
 
     if response_type == "reschedule":
         update_appointment_status(appt["id"], "cancelled")
+        asyncio.get_event_loop().run_in_executor(None, _sync_sheet_background)
         return {"reply": "Of course! Let's find you a new slot. What date and time works for you?"}
     elif response_type == "found_doctor":
         return {"reply": "Glad you got the help you needed! Feel free to reach out anytime. Take care!"}
@@ -487,6 +562,7 @@ async def check_in(appointment_id: int):
         raise HTTPException(status_code=404, detail="Appointment not found")
     update_appointment_status(appointment_id, "checked_in")
     cancel_scheduled_jobs(appointment_id)
+    asyncio.get_event_loop().run_in_executor(None, _sync_sheet_background)
     return {"message": "Patient checked in", "appointment_id": appointment_id}
 
 
@@ -511,7 +587,7 @@ async def no_show_stats():
     return get_no_show_stats()
 
 
-@app.get("/export/appointments.xlsx")
+@app.get("/export/appointments.xlsx", dependencies=[Depends(verify_api_key)])
 async def export_appointments_excel():
     try:
         path = export_appointments_xlsx()
@@ -524,7 +600,7 @@ async def export_appointments_excel():
     )
 
 
-@app.post("/integrations/google-sheets/sync")
+@app.post("/integrations/google-sheets/sync", dependencies=[Depends(verify_api_key)])
 async def sync_google_sheet(payload: GoogleSheetSyncRequest):
     try:
         return sync_appointments_to_google_sheet(payload.sheet_id, payload.credentials_path, payload.worksheet_gid)
@@ -542,7 +618,7 @@ class SettingsUpdate(BaseModel):
     WORKING_DAYS: Optional[str] = None
 
 
-@app.get("/admin/settings")
+@app.get("/admin/settings", dependencies=[Depends(verify_api_key)])
 async def get_settings():
     return {
         "CLINIC_TIMEZONE": settings.CLINIC_TIMEZONE,
@@ -556,14 +632,14 @@ async def get_settings():
     }
 
 
-@app.post("/admin/settings")
+@app.post("/admin/settings", dependencies=[Depends(verify_api_key)])
 async def update_settings(update: SettingsUpdate):
     for key, value in update.dict(exclude_unset=True).items():
         settings.update_setting(key, str(value))
     return {"message": "Settings updated successfully"}
 
 
-@app.get("/admin/models")
+@app.get("/admin/models", dependencies=[Depends(verify_api_key)])
 async def get_ollama_models():
     try:
         async with httpx.AsyncClient() as client:
