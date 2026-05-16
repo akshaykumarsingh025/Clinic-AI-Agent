@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -12,14 +13,23 @@ import torch
 
 if torch.cuda.is_available():
     torch.backends.cudnn.benchmark = True
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
 
 from backend.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Singleton model instances (lazy loaded)
+_MODEL_SWAP_TIMEOUT = 300
+
 _qwen3_model = None
+_qwen3_device = None
+_qwen3_last_used = 0.0
+
 _chatterbox_model = None
+_chatterbox_device = None
+_chatterbox_last_used = 0.0
+_chatterbox_conds_cache = {}
 
 
 def _ensure_cache_dir():
@@ -53,16 +63,13 @@ def _voiceclone_voice_sample(project_dir: Path, language: str) -> str:
 
 
 def _detect_tts_language(text: str, language: Optional[str]) -> str:
-    """Detect language for TTS provider selection."""
     if language:
         lang = language.lower()
         if lang in ("hindi", "hinglish"):
             return "Hindi"
         return "English"
-    # Devanagari characters = Hindi
     if any("\u0900" <= ch <= "\u097F" for ch in text):
         return "Hindi"
-    # Common Hinglish words (distinctly Hindi, not English loanwords)
     hinglish_words = {
         "hai", "hain", "hoon", "ho", "tha", "thi", "the",
         "kya", "kaise", "kaisa", "kaun", "kab", "kahan",
@@ -83,14 +90,12 @@ def _detect_tts_language(text: str, language: Optional[str]) -> str:
     lower_text = text.lower()
     words = set(re.findall(r'[a-z]+', lower_text))
     matches = words & hinglish_words
-    # Require at least 2 Hindi words to avoid false positives on English text
     if len(matches) >= 2:
         return "Hindi"
     return "English"
 
 
 def _find_voice_sample(tts_language: str) -> Optional[str]:
-    """Find a voice sample file from voices/hindi/ or voices/english/ folder."""
     voice_dir = Path("voices") / tts_language.lower()
     if not voice_dir.exists():
         return None
@@ -101,109 +106,237 @@ def _find_voice_sample(tts_language: str) -> Optional[str]:
     return None
 
 
-def _get_qwen3_model():
-    """Lazy load Qwen3 TTS model (singleton)."""
-    global _qwen3_model, _chatterbox_model
+def _move_chatterbox_to_cpu():
+    global _chatterbox_device, _chatterbox_conds_cache
+    if _chatterbox_model is None or _chatterbox_device != "cuda":
+        return
+    logger.info("Moving Chatterbox from GPU to CPU...")
+    t0 = time.time()
+    try:
+        _chatterbox_model.t3 = _chatterbox_model.t3.to("cpu")
+        _chatterbox_model.s3gen = _chatterbox_model.s3gen.to("cpu")
+        _chatterbox_model.ve = _chatterbox_model.ve.to("cpu")
+        if _chatterbox_model.conds is not None:
+            _chatterbox_model.conds = _chatterbox_model.conds.to("cpu")
+        _chatterbox_device = "cpu"
+        _chatterbox_conds_cache = {}
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        logger.info(f"Chatterbox moved to CPU in {time.time()-t0:.1f}s")
+    except Exception as e:
+        logger.warning(f"Failed to move Chatterbox to CPU: {e}")
+        _unload_chatterbox()
+
+
+def _move_qwen3_to_cpu():
+    global _qwen3_device
+    if _qwen3_model is None or _qwen3_device != "cuda":
+        return
+    logger.info("Moving Qwen3 from GPU to CPU...")
+    t0 = time.time()
+    try:
+        _qwen3_model.model = _qwen3_model.model.to("cpu")
+        _qwen3_device = "cpu"
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        logger.info(f"Qwen3 moved to CPU in {time.time()-t0:.1f}s")
+    except Exception as e:
+        logger.warning(f"Failed to move Qwen3 to CPU: {e}")
+        _unload_qwen3()
+
+
+def _free_gpu_for(model_name: str):
+    if model_name == "chatterbox":
+        _move_qwen3_to_cpu()
+    elif model_name == "qwen3":
+        _move_chatterbox_to_cpu()
+
+
+def _move_chatterbox_to_gpu():
+    global _chatterbox_device, _chatterbox_conds_cache
+    if _chatterbox_model is None or _chatterbox_device == "cuda":
+        return
+    _free_gpu_for("chatterbox")
+    logger.info("Moving Chatterbox from CPU to GPU...")
+    t0 = time.time()
+    _chatterbox_model.t3 = _chatterbox_model.t3.to("cuda")
+    _chatterbox_model.s3gen = _chatterbox_model.s3gen.to("cuda")
+    _chatterbox_model.ve = _chatterbox_model.ve.to("cuda")
+    _chatterbox_device = "cuda"
+    _chatterbox_conds_cache = {}
+    logger.info(f"Chatterbox moved to GPU in {time.time()-t0:.1f}s")
+
+
+def _move_qwen3_to_gpu():
+    global _qwen3_device
+    if _qwen3_model is None or _qwen3_device == "cuda":
+        return
+    _free_gpu_for("qwen3")
+    logger.info("Moving Qwen3 from CPU to GPU...")
+    t0 = time.time()
+    _qwen3_model.model = _qwen3_model.model.to("cuda")
+    _qwen3_device = "cuda"
+    logger.info(f"Qwen3 moved to GPU in {time.time()-t0:.1f}s")
+
+
+def _unload_qwen3():
+    global _qwen3_model, _qwen3_device
+    if _qwen3_model is not None:
+        del _qwen3_model
+        _qwen3_model = None
+    _qwen3_device = None
+    import gc; gc.collect()
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
+def _unload_chatterbox():
+    global _chatterbox_model, _chatterbox_device, _chatterbox_conds_cache
     if _chatterbox_model is not None:
-        logger.info("Unloading Chatterbox model to free VRAM for Qwen3...")
         del _chatterbox_model
         _chatterbox_model = None
-        import gc; gc.collect()
-        try:
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception: pass
+    _chatterbox_device = None
+    _chatterbox_conds_cache = {}
+    import gc; gc.collect()
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
 
-    if _qwen3_model is None:
-        try:
-            import torch
-            from qwen_tts import Qwen3TTSModel
 
-            device = "cuda"
-            dtype = torch.float16 # Using float16 instead of bfloat16 as float16 is widely supported on CUDA
-            logger.info(f"Loading Qwen3-TTS model on {device}...")
-            _qwen3_model = Qwen3TTSModel.from_pretrained(
-                settings.QWEN3_TTS_MODEL,
-                device_map=device,
-                torch_dtype=dtype,
-            )
+def _get_qwen3_model():
+    global _qwen3_model, _qwen3_device, _qwen3_last_used
 
-            
-            try:
-                # Log device to verify if parameters exist
-                dev = next(_qwen3_model.parameters()).device
-                logger.info(f"Qwen3-TTS model loaded on {device}. Found parameter on {dev}")
-            except Exception:
-                logger.info(f"Qwen3-TTS model loaded on {device}")
-        except Exception as e:
-            logger.error(f"Failed to load Qwen3-TTS model: {e}")
-            raise
+    if _qwen3_model is not None:
+        _move_qwen3_to_gpu()
+        _qwen3_last_used = time.time()
+        return _qwen3_model
+
+    logger.info("Loading Qwen3-TTS model...")
+    t0 = time.time()
+    try:
+        from qwen_tts import Qwen3TTSModel
+
+        _free_gpu_for("qwen3")
+
+        _qwen3_model = Qwen3TTSModel.from_pretrained(
+            settings.QWEN3_TTS_MODEL,
+            torch_dtype=torch.float16,
+        )
+        _qwen3_device = "cuda"
+
+        _qwen3_last_used = time.time()
+        logger.info(f"Qwen3-TTS model loaded on GPU in {time.time()-t0:.1f}s")
+    except Exception as e:
+        logger.error(f"Failed to load Qwen3-TTS model: {e}")
+        _qwen3_model = None
+        _qwen3_device = None
+        raise
     return _qwen3_model
 
 
 def _get_chatterbox_model():
-    """Lazy load Chatterbox TTS model (singleton) on GPU with optimized settings."""
-    global _chatterbox_model, _qwen3_model
-    if _qwen3_model is not None:
-        logger.info("Unloading Qwen3 model to free VRAM for Chatterbox...")
-        del _qwen3_model
-        _qwen3_model = None
-        import gc; gc.collect()
-        try:
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception: pass
+    global _chatterbox_model, _chatterbox_device, _chatterbox_last_used
 
-    if _chatterbox_model is None:
-        try:
-            import torch
-            from chatterbox.mtl_tts import ChatterboxMultilingualTTS
+    if _chatterbox_model is not None:
+        _move_chatterbox_to_gpu()
+        _chatterbox_last_used = time.time()
+        return _chatterbox_model
 
-            if not torch.cuda.is_available():
-                logger.warning("CUDA not available, but forcing Chatterbox to run on cuda as requested.")
-            device = "cuda"
-            logger.info(f"Loading Chatterbox TTS model on {device}...")
-            _chatterbox_model = ChatterboxMultilingualTTS.from_pretrained(device)
+    logger.info("Loading Chatterbox TTS model...")
+    t0 = time.time()
+    try:
+        from chatterbox.mtl_tts import ChatterboxMultilingualTTS
 
-            # Explicitly force to CUDA
-            if hasattr(_chatterbox_model, "t3"):
-                _chatterbox_model.t3.to(device)
-            if hasattr(_chatterbox_model, "s3gen"):
-                _chatterbox_model.s3gen.to(device)
-            if hasattr(_chatterbox_model, "ve"):
-                _chatterbox_model.ve.to(device)
+        _free_gpu_for("chatterbox")
 
-            try:
-                # Log device to verify
-                dev_t3 = next(_chatterbox_model.t3.parameters()).device
-                dev_s3 = next(_chatterbox_model.s3gen.parameters()).device
-                logger.info(f"Chatterbox TTS model loaded on {device} (t3={dev_t3}, s3={dev_s3}) (max_new_tokens=300)")
-            except Exception:
-                logger.info(f"Chatterbox TTS model loaded on {device} (max_new_tokens=300)")
+        _chatterbox_model = ChatterboxMultilingualTTS.from_pretrained("cuda")
+        _chatterbox_device = "cuda"
 
-            # Speed up: reduce max_new_tokens from 1000 to 300
-            _original_inference = _chatterbox_model.t3.inference
-
-            def _fast_inference(*args, **kwargs):
-                kwargs['max_new_tokens'] = 300
-                return _original_inference(*args, **kwargs)
-
-            _chatterbox_model.t3.inference = _fast_inference
-        except Exception as e:
-            logger.error(f"Failed to load Chatterbox TTS model: {e}")
-            raise
+        _chatterbox_last_used = time.time()
+        logger.info(f"Chatterbox TTS model loaded on GPU in {time.time()-t0:.1f}s")
+    except Exception as e:
+        logger.error(f"Failed to load Chatterbox TTS model: {e}")
+        _chatterbox_model = None
+        _chatterbox_device = None
+        raise
     return _chatterbox_model
 
 
-def _generate_with_qwen3(text: str, output_path: str, language: Optional[str]) -> Optional[str]:
-    """Generate TTS audio using Qwen3-TTS (direct, no subprocess). Best for English."""
+def _warmup_qwen3():
     try:
+        model = _get_qwen3_model()
+        ref_audio = _find_voice_sample("english") or settings.VOICECLONE_VOICE_SAMPLE or ""
+        if ref_audio and os.path.exists(ref_audio):
+            logger.info("Qwen3 warmup: generating sample audio...")
+            kwargs = {
+                "text": "Hello",
+                "language": "English",
+                "ref_audio": str(ref_audio),
+            }
+            if not settings.VOICECLONE_REF_TEXT:
+                kwargs["x_vector_only_mode"] = True
+            else:
+                kwargs["ref_text"] = settings.VOICECLONE_REF_TEXT
+            wavs, sr = model.generate_voice_clone(**kwargs)
+            logger.info(f"Qwen3 warmup complete (sr={sr})")
+        else:
+            logger.info("Qwen3 warmup: model loaded (no ref audio for full warmup)")
+    except Exception as e:
+        logger.warning(f"Qwen3 warmup failed (non-fatal): {e}")
+        _unload_qwen3()
+
+
+def _warmup_chatterbox():
+    try:
+        model = _get_chatterbox_model()
+        ref_audio = _find_voice_sample("hindi") or settings.VOICECLONE_VOICE_SAMPLE or ""
+        if ref_audio and os.path.exists(ref_audio):
+            logger.info("Chatterbox warmup: generating sample audio...")
+            _chatterbox_prepare_conditionals_cached(ref_audio, exaggeration=0.5)
+            wav = model.generate(
+                "Hello",
+                language_id="hi",
+                cfg_weight=0.3,
+                temperature=0.7,
+            )
+            logger.info("Chatterbox warmup complete")
+        else:
+            logger.info("Chatterbox warmup: model loaded (no ref audio for full warmup)")
+    except Exception as e:
+        logger.warning(f"Chatterbox warmup failed (non-fatal): {e}")
+        _unload_chatterbox()
+
+
+def _chatterbox_prepare_conditionals_cached(ref_audio_path: str, exaggeration: float = 0.5):
+    global _chatterbox_conds_cache
+
+    if _chatterbox_model is None:
+        return
+
+    cache_key = f"{ref_audio_path}|{exaggeration}"
+    if cache_key in _chatterbox_conds_cache:
+        _chatterbox_model.conds = _chatterbox_conds_cache[cache_key]
+        return
+
+    logger.info(f"Preparing Chatterbox conditionals for {ref_audio_path}...")
+    t0 = time.time()
+    _chatterbox_model.prepare_conditionals(ref_audio_path, exaggeration=exaggeration)
+    logger.info(f"Conditionals prepared in {time.time()-t0:.1f}s")
+
+    _chatterbox_conds_cache[cache_key] = _chatterbox_model.conds
+
+
+def _generate_with_qwen3(text: str, output_path: str, language: Optional[str]) -> Optional[str]:
+    try:
+        t_start = time.time()
         model = _get_qwen3_model()
         tts_lang = _detect_tts_language(text, language)
 
-        # Get reference audio: try English folder first, then fallback to config
         ref_audio = _find_voice_sample("english") or settings.VOICECLONE_VOICE_SAMPLE or ""
         ref_text = settings.VOICECLONE_REF_TEXT or ""
 
@@ -218,26 +351,42 @@ def _generate_with_qwen3(text: str, output_path: str, language: Optional[str]) -
         if ref_audio and not ref_text:
             kwargs["x_vector_only_mode"] = True
 
-        wavs, sr = model.generate_voice_clone(**kwargs)
+        with torch.inference_mode():
+            wavs, sr = model.generate_voice_clone(**kwargs)
 
+        import numpy as np
         import soundfile as sf
-        sf.write(output_path, wavs[0], sr)
+
+        wav_data = wavs[0]
+        if hasattr(wav_data, "cpu"):
+            wav_data = wav_data.cpu()
+        if hasattr(wav_data, "numpy"):
+            wav_data = wav_data.numpy()
+        elif not isinstance(wav_data, np.ndarray):
+            wav_data = np.array(wav_data)
+
+        if wav_data.ndim > 1:
+            wav_data = wav_data.squeeze()
+
+        sf.write(output_path, wav_data, sr)
 
         if os.path.exists(output_path):
-            logger.info(f"Qwen3-TTS audio saved: {output_path}")
+            elapsed = time.time() - t_start
+            logger.info(f"Qwen3-TTS audio saved in {elapsed:.1f}s: {output_path}")
             return output_path
     except Exception as e:
         logger.error(f"Qwen3-TTS generation failed: {e}")
+        import traceback
+        traceback.print_exc()
     return None
 
 
 def _generate_with_chatterbox(text: str, output_path: str, language: Optional[str]) -> Optional[str]:
-    """Generate TTS audio using Chatterbox Multilingual TTS (direct, no subprocess). Best for Hindi."""
     try:
+        t_start = time.time()
         model = _get_chatterbox_model()
         tts_lang = _detect_tts_language(text, language)
 
-        # Get reference audio: try Hindi folder first, then fallback to config
         ref_audio = _find_voice_sample("hindi") or settings.VOICECLONE_VOICE_SAMPLE or ""
         if not ref_audio or not os.path.exists(ref_audio):
             logger.warning("No reference audio for Chatterbox voice cloning. Put a .wav file in voices/hindi/")
@@ -248,8 +397,9 @@ def _generate_with_chatterbox(text: str, output_path: str, language: Optional[st
 
         logger.info(f"Chatterbox generating: lang={tts_lang}, text={text[:60]}...")
 
-        # Chunk text if needed (Chatterbox has a ~300 char limit)
-        max_chars = 300
+        _chatterbox_prepare_conditionals_cached(ref_audio, exaggeration=0.5)
+
+        max_chars = 250
         chunks = []
         if len(text) <= max_chars:
             chunks = [text]
@@ -271,21 +421,22 @@ def _generate_with_chatterbox(text: str, output_path: str, language: Optional[st
         import soundfile as sf
 
         all_audio = []
-        for chunk in chunks:
-            wav = model.generate(
-                chunk,
-                language_id=lang_code,
-                audio_prompt_path=str(ref_audio),
-                exaggeration=0.5,
-                temperature=0.8,
-                cfg_weight=0.5,
-            )
+        for i, chunk in enumerate(chunks):
+            t_chunk = time.time()
+            with torch.inference_mode():
+                wav = model.generate(
+                    chunk,
+                    language_id=lang_code,
+                    cfg_weight=0.3,
+                    temperature=0.7,
+                )
             chunk_audio = wav.squeeze(0)
             if hasattr(chunk_audio, "cpu"):
                 chunk_audio = chunk_audio.cpu()
             if hasattr(chunk_audio, "numpy"):
                 chunk_audio = chunk_audio.numpy()
             all_audio.append(chunk_audio)
+            logger.info(f"Chatterbox chunk {i+1}/{len(chunks)} done in {time.time()-t_chunk:.1f}s")
 
         if len(all_audio) > 1:
             full_audio = np.concatenate(all_audio)
@@ -295,15 +446,17 @@ def _generate_with_chatterbox(text: str, output_path: str, language: Optional[st
         sf.write(output_path, full_audio, model.sr)
 
         if os.path.exists(output_path):
-            logger.info(f"Chatterbox audio saved: {output_path}")
+            elapsed = time.time() - t_start
+            logger.info(f"Chatterbox audio saved in {elapsed:.1f}s: {output_path}")
             return output_path
     except Exception as e:
         logger.error(f"Chatterbox generation failed: {e}")
+        import traceback
+        traceback.print_exc()
     return None
 
 
 def _generate_with_voiceclone(text: str, output_path: str, language: Optional[str]) -> Optional[str]:
-    """Generate TTS via VoiceClone subprocess bridge."""
     project_dir = Path(settings.VOICECLONE_PROJECT_DIR)
     if not project_dir.exists():
         return None
@@ -355,7 +508,6 @@ def _generate_with_voiceclone(text: str, output_path: str, language: Optional[st
 
 
 def _generate_with_piper(text: str, output_path: str) -> Optional[str]:
-    """Generate TTS using Piper binary."""
     if not os.path.exists(settings.PIPER_VOICE):
         return None
     if not os.path.exists(settings.PIPER_VOICE + ".json"):
@@ -380,7 +532,6 @@ def _generate_with_piper(text: str, output_path: str) -> Optional[str]:
 
 
 async def generate_voice_reply(text: str, language: Optional[str] = None) -> Optional[str]:
-    """Generate voice reply using the configured TTS provider."""
     _ensure_cache_dir()
 
     provider = (settings.TTS_PROVIDER or "piper").lower()
@@ -391,7 +542,8 @@ async def generate_voice_reply(text: str, language: Optional[str] = None) -> Opt
     if os.path.exists(output_path):
         return output_path
 
-    # Smart auto-routing: pick best provider per language
+    import asyncio
+
     if provider == "auto":
         tts_lang = _detect_tts_language(text, language)
         if tts_lang == "Hindi":
@@ -399,34 +551,57 @@ async def generate_voice_reply(text: str, language: Optional[str] = None) -> Opt
         else:
             provider = "qwen3"
 
-    if provider == "qwen3":
-        return _generate_with_qwen3(text, output_path, language)
-    elif provider == "chatterbox":
-        return _generate_with_chatterbox(text, output_path, language)
+    result = None
+    if provider == "chatterbox":
+        result = await asyncio.to_thread(_generate_with_chatterbox, text, output_path, language)
+        if result is None:
+            logger.warning("Chatterbox failed, falling back to Qwen3...")
+            result = await asyncio.to_thread(_generate_with_qwen3, text, output_path, language)
+    elif provider == "qwen3":
+        result = await asyncio.to_thread(_generate_with_qwen3, text, output_path, language)
+        if result is None:
+            logger.warning("Qwen3 failed, falling back to Chatterbox...")
+            result = await asyncio.to_thread(_generate_with_chatterbox, text, output_path, language)
     elif provider == "voiceclone":
-        return _generate_with_voiceclone(text, output_path, language)
+        result = await asyncio.to_thread(_generate_with_voiceclone, text, output_path, language)
     elif provider == "piper":
-        return _generate_with_piper(text, output_path)
+        result = await asyncio.to_thread(_generate_with_piper, text, output_path)
 
-    return None
+    return result
+
+
+def _idle_model_cleanup():
+    now = time.time()
+    if (_qwen3_model is not None
+            and _qwen3_device == "cuda"
+            and now - _qwen3_last_used > _MODEL_SWAP_TIMEOUT):
+        _move_qwen3_to_cpu()
+
+    if (_chatterbox_model is not None
+            and _chatterbox_device == "cuda"
+            and now - _chatterbox_last_used > _MODEL_SWAP_TIMEOUT):
+        _move_chatterbox_to_cpu()
 
 
 def unload_tts_models():
-    """Unload all TTS models from memory."""
-    global _qwen3_model, _chatterbox_model
+    global _qwen3_model, _qwen3_device
+    global _chatterbox_model, _chatterbox_device, _chatterbox_conds_cache
 
     if _qwen3_model is not None:
         del _qwen3_model
         _qwen3_model = None
+        _qwen3_device = None
         logger.info("Qwen3-TTS model unloaded")
 
     if _chatterbox_model is not None:
         del _chatterbox_model
         _chatterbox_model = None
+        _chatterbox_device = None
+        _chatterbox_conds_cache = {}
         logger.info("Chatterbox model unloaded")
 
     try:
-        import torch
+        import gc; gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
     except ImportError:

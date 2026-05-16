@@ -250,6 +250,14 @@ async def send_daily_summary():
         logger.error(f"Failed to send daily summary: {e}")
 
 
+async def tts_idle_cleanup():
+    try:
+        from backend.tts import _idle_model_cleanup
+        _idle_model_cleanup()
+    except Exception as e:
+        logger.error(f"TTS idle cleanup error: {e}")
+
+
 async def cleanup_audio_cache():
     logger.info("Running audio cache cleanup...")
     cache_dir = settings.AUDIO_CACHE_DIR
@@ -294,6 +302,13 @@ def init_scheduler():
         cleanup_audio_cache,
         trigger=CronTrigger(hour=3, minute=0), # Run daily at 3 AM
         id="cleanup_audio_cache",
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
+        tts_idle_cleanup,
+        trigger=CronTrigger(minute="*/5"),
+        id="tts_idle_cleanup",
         replace_existing=True,
     )
 

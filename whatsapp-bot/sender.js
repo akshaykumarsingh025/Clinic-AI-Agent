@@ -25,20 +25,24 @@ async function convertToOggOpus(inputPath) {
         ffmpegPath = 'ffmpeg';
     }
 
-    try {
-        await execFileAsync(ffmpegPath, [
-            '-y', '-i', inputPath,
-            '-c:a', 'libopus',
-            '-b:a', '64k',
-            '-ar', '48000',
-            '-ac', '1',
-            '-application', 'voip',
-            outputPath,
-        ], { timeout: 30000 });
+    const ffmpegArgs = [
+        '-y', '-i', inputPath,
+        '-c:a', 'libopus',
+        '-b:a', '64k',
+        '-ar', '48000',
+        '-ac', '1',
+    ];
 
-        if (fs.existsSync(outputPath)) {
-            return outputPath;
-        }
+    try {
+        await execFileAsync(ffmpegPath, [...ffmpegArgs, '-application', 'voip', outputPath], { timeout: 30000 });
+        if (fs.existsSync(outputPath)) return outputPath;
+    } catch (err) {
+        console.warn('[sender] ffmpeg with -application voip failed, retrying without it:', err.message);
+    }
+
+    try {
+        await execFileAsync(ffmpegPath, [...ffmpegArgs, outputPath], { timeout: 30000 });
+        if (fs.existsSync(outputPath)) return outputPath;
     } catch (err) {
         console.error('[sender] ffmpeg conversion failed:', err.message);
     }

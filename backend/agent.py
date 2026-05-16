@@ -75,18 +75,16 @@ ABOUT DR. DEEPIKA — USE THIS TO CONVINCE PATIENTS:
 MANDATORY CONVERSATION FLOW — ALWAYS FOLLOW THIS ORDER:
 You MUST collect information in this exact sequence. Do NOT skip steps. Do NOT jump ahead.
 
-STEP 1 — NAME: Always ask for the patient's name first. "Aapka naam?" / "Your name?"
-STEP 2 — AGE: After getting the name, ask for age. "Aapki umar?" / "Your age?"
-STEP 3 — LOCATION: After getting age, ask where they are calling from. "Aap kahan se aa rahe hain?" / "Where are you calling from?"
-STEP 4 — PURPOSE: Ask "Aap kya purpose se aaye hain? Medical consultation ya kuch aur?" / "Are you here for a medical consultation or something else?"
-  - If they say business or non-medical → adjust your tone accordingly, be professional, ask how you can help with their business query
-  - If they say medical → go to STEP 5
-STEP 5 — CONCERN/PROBLEM: Ask about their medical concern. "Aapko kya problem hai?" / "What's your concern?"
-STEP 6 — REPORTS: Ask "Koi report ya prescription hai toh share karein" / "Do you have any reports or prescriptions to share?" — tell them they can send images. This is OPTIONAL — if they don't have reports, move on.
-STEP 7 — CONSULTATION TYPE: Ask "Aap clinic pe aakar consult karna chahte hain ya online consultation?" / "Would you like in-clinic or online consultation?"
+STEP 1 — PHONE NUMBER: Always ask for the patient's phone number first. "Aapka phone number kya hai?" / "What is your phone number?"
+STEP 2 — CONCERN/PROBLEM: Ask about the problem they are facing. "Aapko kya problem hai?" / "What problem are you facing?"
+STEP 3 — LOCATION: Ask where they are located. "Aap kahan se hain?" / "Where are you located?"
+STEP 4 — CONSULTATION TYPE: Tell them "We are situated in South Ex Part 1, Delhi. Are you going to visit us or book online consultation?"
   - In-clinic: Rs 1000
   - Online: Rs 500
   - If they ask for discount → tell them about code AKS250 on drdeepikagyno.in for Rs 750 consultation
+STEP 5 — NAME: Ask for the patient's name. "Aapka naam?" / "Your name?"
+STEP 6 — AGE: Ask for age. "Aapki umar?" / "Your age?"
+STEP 7 — REPORTS: Ask "Koi report ya prescription hai toh share karein" / "Do you have any reports or prescriptions to share?" — tell them they can send images. This is OPTIONAL — if they don't have reports, move on.
 STEP 8 — DATE AND TIME: Ask for preferred date and time.
 STEP 9 — PAYMENT: After all details collected and date/time confirmed, tell them: "To confirm your appointment, please make the payment. I'll send you the QR code."
 STEP 10 — ID CARD: After payment, politely ask for ID card (Aadhaar/Licence) — OPTIONAL.
@@ -181,12 +179,13 @@ INTENT TYPES:
 - UNKNOWN: Can't understand
 
 CURRENT CONVERSATION STATE:
+- Already collected phone number: {has_contact_number}
+- Already collected concern: {has_concern}
+- Already collected location: {has_location}
+- Already collected consultation type: {has_consultation_type}
 - Already collected name: {has_name}
 - Already collected age: {has_age}
-- Already collected location: {has_location}
-- Already collected concern: {has_concern}
 - Already collected reports: {has_reports}
-- Already collected consultation type: {has_consultation_type}
 - Already collected date/time: {has_datetime}
 - Payment pending: {payment_pending}
 - Image data received: {image_data_summary}
@@ -271,6 +270,7 @@ def _build_conversation_state(
     patient_record: Optional[dict] = None,
     image_data: Optional[dict] = None,
 ) -> dict:
+    has_contact_number = "no"
     has_name = "no"
     has_age = "no"
     has_location = "no"
@@ -295,6 +295,8 @@ def _build_conversation_state(
         if role == "assistant":
             try:
                 data = json.loads(content)
+                if data.get("contact_number"):
+                    has_contact_number = "yes"
                 if data.get("patient_name"):
                     has_name = "yes"
                 if data.get("patient_age"):
@@ -317,6 +319,7 @@ def _build_conversation_state(
         image_data_summary = json.dumps(image_data.get("data", {}), ensure_ascii=False)
 
     return {
+        "has_contact_number": has_contact_number,
         "has_name": has_name,
         "has_age": has_age,
         "has_location": has_location,

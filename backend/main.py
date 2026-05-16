@@ -87,6 +87,23 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Ollama not reachable at {settings.OLLAMA_HOST}: {e}. AI responses will fail until Ollama is running.")
     init_scheduler()
     logger.info("Scheduler started")
+
+    if settings.TTS_PROVIDER.lower() in ("auto", "chatterbox", "qwen3"):
+        import asyncio
+
+        async def _warmup_tts():
+            try:
+                from backend.tts import _warmup_chatterbox, _warmup_qwen3
+                provider = settings.TTS_PROVIDER.lower()
+                if provider in ("auto", "chatterbox"):
+                    await asyncio.to_thread(_warmup_chatterbox)
+                elif provider == "qwen3":
+                    await asyncio.to_thread(_warmup_qwen3)
+            except Exception as e:
+                logger.warning(f"TTS warmup failed (non-fatal): {e}")
+
+        asyncio.create_task(_warmup_tts())
+
     yield
 
 
