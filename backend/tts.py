@@ -27,11 +27,13 @@ _MODEL_SWAP_TIMEOUT = 300
 _qwen3_model = None
 _qwen3_device = None
 _qwen3_last_used = 0.0
+_qwen3_busy = False
 
 _chatterbox_model = None
 _chatterbox_device = None
 _chatterbox_last_used = 0.0
 _chatterbox_conds_cache = {}
+_chatterbox_busy = False
 
 
 def _ensure_cache_dir():
@@ -201,7 +203,7 @@ def _get_qwen3_model():
 
         _qwen3_model = Qwen3TTSModel.from_pretrained(
             settings.QWEN3_TTS_MODEL,
-            torch_dtype=torch.float16,
+            dtype=torch.float16,
         )
         _qwen3_device = "cuda"
 
@@ -304,6 +306,8 @@ def _chatterbox_prepare_conditionals_cached(ref_audio_path: str, exaggeration: f
 
 
 def _generate_with_qwen3(text: str, output_path: str, language: Optional[str]) -> Optional[str]:
+    global _qwen3_busy
+    _qwen3_busy = True
     try:
         t_start = time.time()
         model = _get_qwen3_model()
@@ -348,10 +352,16 @@ def _generate_with_qwen3(text: str, output_path: str, language: Optional[str]) -
         logger.error(f"Qwen3-TTS generation failed: {e}")
         import traceback
         traceback.print_exc()
+    finally:
+        _qwen3_busy = False
+        global _qwen3_last_used
+        _qwen3_last_used = time.time()
     return None
 
 
 def _generate_with_chatterbox(text: str, output_path: str, language: Optional[str]) -> Optional[str]:
+    global _chatterbox_busy
+    _chatterbox_busy = True
     try:
         t_start = time.time()
         model = _get_chatterbox_model()
@@ -423,6 +433,10 @@ def _generate_with_chatterbox(text: str, output_path: str, language: Optional[st
         logger.error(f"Chatterbox generation failed: {e}")
         import traceback
         traceback.print_exc()
+    finally:
+        _chatterbox_busy = False
+        global _chatterbox_last_used
+        _chatterbox_last_used = time.time()
     return None
 
 
@@ -491,11 +505,13 @@ def _idle_model_cleanup():
     now = time.time()
     if (_qwen3_model is not None
             and _qwen3_device == "cuda"
+            and not _qwen3_busy
             and now - _qwen3_last_used > _MODEL_SWAP_TIMEOUT):
         _move_qwen3_to_cpu()
 
     if (_chatterbox_model is not None
             and _chatterbox_device == "cuda"
+            and not _chatterbox_busy
             and now - _chatterbox_last_used > _MODEL_SWAP_TIMEOUT):
         _move_chatterbox_to_cpu()
 

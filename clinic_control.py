@@ -7,7 +7,7 @@ import sys
 import threading
 from datetime import datetime
 from pathlib import Path
-from tkinter import BooleanVar, StringVar, Tk, filedialog, messagebox
+from tkinter import BooleanVar, StringVar, Tk, Toplevel, filedialog, messagebox
 from tkinter import scrolledtext, ttk
 from urllib.parse import urlparse
 from urllib.request import urlopen, Request
