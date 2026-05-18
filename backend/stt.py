@@ -4,9 +4,12 @@ import subprocess
 import asyncio
 from typing import Optional
 
+import torch
+
 logger = logging.getLogger(__name__)
 
 _whisper_model = None
+_whisper_use_fp16 = torch.cuda.is_available()
 
 
 def _get_whisper_model():
@@ -19,7 +22,11 @@ def _get_whisper_model():
 
         import whisper
         _whisper_model = whisper.load_model("medium")
-        logger.info("Whisper model loaded (medium)")
+        if _whisper_use_fp16:
+            _whisper_model = _whisper_model.cuda()
+            logger.info("Whisper model loaded (medium, CUDA)")
+        else:
+            logger.info("Whisper model loaded (medium, CPU)")
     return _whisper_model
 
 
@@ -69,7 +76,7 @@ async def transcribe_audio(audio_path: str) -> tuple[str, Optional[str]]:
         converted_path,
         language=None,
         task="transcribe",
-        fp16=False,
+        fp16=_whisper_use_fp16,
     )
 
     text = result["text"].strip()

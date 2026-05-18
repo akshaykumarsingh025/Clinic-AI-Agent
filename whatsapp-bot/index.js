@@ -450,13 +450,24 @@ async function connectWhatsApp() {
                     }
 
                     if (reply_audio) {
-                        try {
-                            console.log(`Attempting to send audio to ${senderJid}...`);
-                            await sock.sendPresenceUpdate('composing', senderJid).catch(() => {});
-                            await sendAudio(sock, senderJid, reply_audio);
-                            console.log(`Successfully sent audio to ${senderJid}`);
-                        } catch (audioErr) {
-                            console.error(`Failed to send audio to ${senderJid}:`, audioErr.message);
+                        await new Promise(r => setTimeout(r, 800));
+                        let audioSent = false;
+                        for (let attempt = 1; attempt <= 3; attempt++) {
+                            try {
+                                console.log(`Attempting to send audio to ${senderJid} (attempt ${attempt})...`);
+                                await sock.sendPresenceUpdate('composing', senderJid).catch(() => {});
+                                await new Promise(r => setTimeout(r, 200));
+                                await sendAudio(sock, senderJid, reply_audio);
+                                console.log(`Successfully sent audio to ${senderJid}`);
+                                audioSent = true;
+                                break;
+                            } catch (audioErr) {
+                                console.error(`Failed to send audio to ${senderJid} (attempt ${attempt}):`, audioErr.message);
+                                if (attempt < 3) await new Promise(r => setTimeout(r, 1000 * attempt));
+                            }
+                        }
+                        if (!audioSent) {
+                            console.error(`All audio send attempts failed for ${senderJid}`);
                         }
                     }
                 }

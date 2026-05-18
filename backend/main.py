@@ -154,6 +154,7 @@ def _sync_calendar_background(appointment):
 @app.post("/webhook/message")
 async def handle_message(payload: WebhookMessage):
     phone = payload.phone
+    logger.info(f"handle_message from {phone}: text='{(payload.message_text or '')[:60]}', audio={bool(payload.audio_path)}, image={bool(payload.image_path)}")
 
     async with user_locks[phone]:
         user_message = payload.message_text or ""
@@ -234,8 +235,13 @@ async def handle_message(payload: WebhookMessage):
         audio_lang_hint = None
         if audio_path and os.path.exists(audio_path):
             try:
-                user_message, audio_lang_hint = await transcribe_audio(audio_path)
+                user_message, audio_lang_hint = await asyncio.wait_for(
+                    transcribe_audio(audio_path), timeout=60
+                )
                 logger.info(f"Transcribed audio from {phone}: {user_message[:50]} (lang: {audio_lang_hint})")
+            except asyncio.TimeoutError:
+                logger.error(f"STT timed out (60s) for {phone}")
+                return {"text_reply": "Sorry, I couldn't understand the voice note. Could you please type your message?", "audio_path": None}
             except Exception as e:
                 logger.error(f"STT failed for {phone}: {e}")
                 return {"text_reply": "Sorry, I couldn't understand the voice note. Could you please type your message?", "audio_path": None}

@@ -22,7 +22,7 @@ from backend.config import settings
 
 logger = logging.getLogger(__name__)
 
-_MODEL_SWAP_TIMEOUT = 300
+_MODEL_SWAP_TIMEOUT = 3600
 
 _qwen3_model = None
 _qwen3_device = None
@@ -114,6 +114,10 @@ def _move_qwen3_to_cpu():
     t0 = time.time()
     try:
         _qwen3_model.model = _qwen3_model.model.to("cpu")
+        for attr in ['talker', 'speaker_encoder', 'code_predictor']:
+            sub = getattr(_qwen3_model, attr, None)
+            if sub is not None:
+                setattr(_qwen3_model, attr, sub.to("cpu"))
         _qwen3_device = "cpu"
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -153,6 +157,10 @@ def _move_qwen3_to_gpu():
     logger.info("Moving Qwen3 from CPU to GPU...")
     t0 = time.time()
     _qwen3_model.model = _qwen3_model.model.to("cuda")
+    for attr in ['talker', 'speaker_encoder', 'code_predictor']:
+        sub = getattr(_qwen3_model, attr, None)
+        if sub is not None:
+            setattr(_qwen3_model, attr, sub.to("cuda"))
     _qwen3_device = "cuda"
     logger.info(f"Qwen3 moved to GPU in {time.time()-t0:.1f}s")
 
@@ -203,7 +211,8 @@ def _get_qwen3_model():
 
         _qwen3_model = Qwen3TTSModel.from_pretrained(
             settings.QWEN3_TTS_MODEL,
-            dtype=torch.float16,
+            device_map="cuda",
+            dtype=torch.bfloat16,
         )
         _qwen3_device = "cuda"
 
