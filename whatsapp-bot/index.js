@@ -1,17 +1,22 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
-const QRCode = require('qrcode-terminal');
-const axios = require('axios');
-const path = require('path');
-const fs = require('fs');
-const express = require('express');
-const { downloadMedia } = require('./downloader');
-const { sendText, sendAudio, sendButtons } = require('./sender');
+import makeWASocket, { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
+import QRCode from 'qrcode-terminal';
+import axios from 'axios';
+import path from 'path';
+import fs from 'fs';
+import express from 'express';
+import { downloadMedia } from './downloader.js';
+import { sendText, sendAudio, sendButtons } from './sender.js';
+
+import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const FASTAPI_URL = process.env.FASTAPI_URL || 'http://localhost:8000';
 const AUTH_FOLDER = process.env.WHATSAPP_AUTH_FOLDER || path.join(__dirname, 'auth_info');
 const KEEPALIVE_PHONE = process.env.KEEPALIVE_PHONE || '919871208803';
 const KEEPALIVE_INTERVAL_MS = parseInt(process.env.KEEPALIVE_INTERVAL_MS) || 15 * 60 * 1000;
-const KEEPALIVE_MESSAGE = process.env.KEEPALIVE_MESSAGE || '[system keepalive - ignore]';
 const MAX_DECRYPTION_FAILS = 5;
 const DECRYPTION_FAIL_WINDOW_MS = 60000;
 
@@ -22,6 +27,20 @@ let connectionStatus = 'starting';
 let decryptionFails = [];
 let decryptionResetting = false;
 let keepaliveTimer = null;
+let pairingPhone = null;
+let latestPairingCode = null;
+
+const messageStore = new Map();
+
+function storeMessage(key, msg) {
+    const id = key?.id;
+    if (id) messageStore.set(id, msg);
+}
+
+async function getMessage(key) {
+    const msg = messageStore.get(key?.id);
+    return msg || undefined;
+}
 
 function getStatusCode(error) {
     if (!error) return null;
@@ -44,11 +63,10 @@ function recordDecryptionFail() {
 
 function cleanupOldBackups() {
     try {
-        const backupDirs = fs.readdirSync(__dirname)
+        const backupDirs = fs.readdirSync(path.join(__dirname))
             .filter(d => d.startsWith('auth_info_backup_'))
             .sort()
             .reverse();
-        // Keep only last 3 backups
         for (const dir of backupDirs.slice(3)) {
             const dirPath = path.join(__dirname, dir);
             fs.rmSync(dirPath, { recursive: true, force: true });
@@ -79,7 +97,7 @@ function startKeepalive() {
             }
         }
     }, KEEPALIVE_INTERVAL_MS);
-    
+
     setInterval(async () => {
         if (!currentSock || connectionStatus !== 'open') return;
         try {
@@ -144,6 +162,20 @@ function createBaileysLogger() {
     return logger;
 }
 
+function extractSenderJid(msg) {
+    let senderId = msg.key?.remoteJid;
+    if (senderId && senderId.endsWith('@lid')) {
+        if (msg.key?.senderPn) {
+            senderId = msg.key.senderPn;
+        } else if (msg.key?.remoteJidAlt) {
+            senderId = msg.key.remoteJidAlt;
+        } else if (msg.messageStubParameters && msg.messageStubParameters[0]) {
+            senderId = msg.messageStubParameters[0];
+        }
+    }
+    return senderId;
+}
+
 async function connectWhatsApp() {
     if (isReconnecting) return;
     isReconnecting = true;
@@ -154,12 +186,15 @@ async function connectWhatsApp() {
 
         const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
 
+        const usePairing = Boolean(pairingPhone);
+
         const sock = makeWASocket({
             version,
             auth: state,
             logger: createBaileysLogger(),
-            browser: ['Clinic Agent', 'Chrome', '1.0.0'],
+            browser: usePairing ? ['Chrome (Linux)', '', ''] : ['Clinic Agent', 'Chrome', '1.0.0'],
             printQRInTerminal: false,
+            getMessage,
         });
 
         currentSock = sock;
@@ -169,11 +204,26 @@ async function connectWhatsApp() {
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect, qr } = update;
 
-            if (qr) {
+            if (qr && !usePairing) {
                 latestQr = qr;
                 connectionStatus = 'qr';
                 console.log('\nScan this QR code with your clinic WhatsApp:\n');
                 QRCode.generate(qr, { small: true });
+            }
+
+            if (connection === 'connecting' && usePairing && !state.creds.registered) {
+                try {
+                    const phoneDigits = pairingPhone.replace(/[^0-9]/g, '');
+                    const code = await sock.requestPairingCode(phoneDigits);
+                    latestPairingCode = code;
+                    connectionStatus = 'pairing';
+                    console.log(`\nPairing Code: ${code}`);
+                    console.log(`Enter this code on your phone: WhatsApp > Linked Devices > Link with phone number\n`);
+                } catch (err) {
+                    console.error('[whatsapp] Failed to request pairing code:', err.message);
+                    pairingPhone = null;
+                    latestPairingCode = null;
+                }
             }
 
             if (connection === 'close') {
@@ -182,19 +232,26 @@ async function connectWhatsApp() {
                 stopKeepalive();
                 const statusCode = getStatusCode(lastDisconnect?.error);
                 const loggedOut = statusCode === DisconnectReason.loggedOut;
+                const badSession = statusCode === DisconnectReason.badSession;
+                const restartRequired = statusCode === DisconnectReason.restartRequired;
                 console.log('Connection closed. Logged out:', loggedOut, '| Status:', statusCode);
-                if (!loggedOut) {
+
+                if (loggedOut) {
+                    console.log('Logged out. Use Pairing Code or delete auth_info and restart to scan QR again.');
+                } else if (badSession || restartRequired) {
+                    console.log(`Session error (${statusCode}). Resetting auth and reconnecting...`);
+                    deleteAuthAndReconnect(`Session error: ${statusCode}`);
+                } else {
                     console.log('Reconnecting in 5 seconds...');
                     isReconnecting = false;
                     setTimeout(() => connectWhatsApp(), 5000);
-                } else {
-                    console.log('Logged out. Delete auth_info folder and restart to scan QR again.');
                 }
             }
 
             if (connection === 'open') {
                 isReconnecting = false;
                 latestQr = null;
+                latestPairingCode = null;
                 connectionStatus = 'open';
                 decryptionFails = [];
                 startKeepalive();
@@ -205,12 +262,14 @@ async function connectWhatsApp() {
 
         sock.ev.on('messages.upsert', async ({ messages, type }) => {
             const msg = messages[0];
-            const senderJid = msg.key?.remoteJid;
-            console.log(`[whatsapp] Message upsert: type=${type}, fromMe=${msg.key?.fromMe}, remoteJid=${senderJid}, hasMessage=${!!msg.message}`);
+            const rawJid = msg.key?.remoteJid;
+            const senderJid = extractSenderJid(msg);
+            console.log(`[whatsapp] Message upsert: type=${type}, fromMe=${msg.key?.fromMe}, remoteJid=${rawJid}, resolvedJid=${senderJid}, hasMessage=${!!msg.message}`);
 
             if (!msg.message) return;
 
-            // Track staff messages (fromMe=true) for AI context
+            storeMessage(msg.key, msg);
+
             if (msg.key.fromMe) {
                 let staffText = '';
                 if (msg.message.conversation) {
@@ -325,7 +384,6 @@ async function connectWhatsApp() {
 
             console.log(`[whatsapp] Processing message from ${phone}: "${messageText}"`);
 
-            // Send typing indicator
             try {
                 await sock.sendPresenceUpdate('composing', senderJid);
             } catch (e) { }
@@ -344,8 +402,7 @@ async function connectWhatsApp() {
                                 button_number: parseInt(messageText.trim()),
                             }, { timeout: 30000 });
                         } else {
-                            // TTS generation can take a long time on some systems
-                            const reqTimeout = 600000; // 10 minutes
+                            const reqTimeout = 600000;
                             response = await axios.post(`${FASTAPI_URL}/webhook/message`, {
                                 phone: phone,
                                 message_text: messageText || null,
@@ -396,7 +453,6 @@ async function connectWhatsApp() {
                             console.log(`Successfully sent audio to ${senderJid}`);
                         } catch (audioErr) {
                             console.error(`Failed to send audio to ${senderJid}:`, audioErr.message);
-                            // Text was already sent, don't send another error message
                         }
                     }
                 }
@@ -439,6 +495,7 @@ app.get('/status', (req, res) => {
         connected: Boolean(currentSock && connectionStatus === 'open'),
         status: connectionStatus,
         qr: latestQr,
+        pairing_code: latestPairingCode,
         auth_folder: AUTH_FOLDER,
         decryption_fails: decryptionFails.length,
     });
@@ -448,10 +505,10 @@ app.post('/send/text', async (req, res) => {
     try {
         const { phone, text } = req.body;
         if (!currentSock) return res.status(503).json({ error: 'WhatsApp not connected' });
-        const jid = phone.includes('@') ? phone : (phone.length > 15 && !phone.startsWith('+') ? `${phone}@lid` : `${phone}@s.whatsapp.net`);
+        const jid = phone.includes('@') ? phone : `${phone}@s.whatsapp.net`;
         try { await currentSock.sendPresenceUpdate('composing', jid); } catch (e) {}
         await new Promise(r => setTimeout(r, 800));
-        await sendText(currentSock, phone, text);
+        await sendText(currentSock, jid, text);
         try { await currentSock.sendPresenceUpdate('paused', jid); } catch (e) {}
         res.json({ success: true });
     } catch (err) {
@@ -463,10 +520,10 @@ app.post('/send/audio', async (req, res) => {
     try {
         const { phone, audio_path } = req.body;
         if (!currentSock) return res.status(503).json({ error: 'WhatsApp not connected' });
-        const jid = phone.includes('@') ? phone : (phone.length > 15 && !phone.startsWith('+') ? `${phone}@lid` : `${phone}@s.whatsapp.net`);
+        const jid = phone.includes('@') ? phone : `${phone}@s.whatsapp.net`;
         try { await currentSock.sendPresenceUpdate('composing', jid); } catch (e) {}
         await new Promise(r => setTimeout(r, 500));
-        await sendAudio(currentSock, phone, audio_path);
+        await sendAudio(currentSock, jid, audio_path);
         try { await currentSock.sendPresenceUpdate('paused', jid); } catch (e) {}
         res.json({ success: true });
     } catch (err) {
@@ -488,6 +545,42 @@ app.post('/send/buttons', async (req, res) => {
 app.post('/reset-session', async (req, res) => {
     await deleteAuthAndReconnect('Manual reset via API');
     res.json({ message: 'Session reset initiated', status: connectionStatus });
+});
+
+app.post('/pairing-code', async (req, res) => {
+    try {
+        const { phone } = req.body;
+        if (!phone) return res.status(400).json({ error: 'Phone number required (e.g. 919871208803)' });
+
+        const phoneDigits = phone.replace(/[^0-9]/g, '');
+        if (phoneDigits.length < 10) return res.status(400).json({ error: 'Invalid phone number' });
+
+        pairingPhone = phoneDigits;
+        latestPairingCode = null;
+        latestQr = null;
+
+        if (currentSock) {
+            try { currentSock.end(undefined); } catch (e) {}
+            currentSock = null;
+        }
+        stopKeepalive();
+
+        isReconnecting = false;
+        connectWhatsApp();
+
+        const deadline = Date.now() + 15000;
+        while (!latestPairingCode && Date.now() < deadline) {
+            await new Promise(r => setTimeout(r, 500));
+        }
+
+        if (latestPairingCode) {
+            res.json({ success: true, pairing_code: latestPairingCode, phone: phoneDigits });
+        } else {
+            res.json({ success: false, error: 'Pairing code not generated yet. Check the log.' });
+        }
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 const PORT = process.env.BOT_PORT || 3001;

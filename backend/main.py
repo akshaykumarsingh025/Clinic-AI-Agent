@@ -142,30 +142,6 @@ def _sync_sheet_background():
         logger.warning(f"Google Sheet sync failed: {exc}")
 
 
-def _send_audio_async(phone: str, text: str, language: str):
-    """Generate TTS audio and send it via WhatsApp — runs in a background thread."""
-    try:
-        import asyncio as _aio
-        loop = _aio.new_event_loop()
-        audio_reply_path = loop.run_until_complete(generate_voice_reply(text, language=language))
-        loop.close()
-        if not audio_reply_path or not os.path.exists(audio_reply_path):
-            logger.warning(f"Audio generation returned no file for {phone}")
-            return
-        audio_reply_path = os.path.abspath(audio_reply_path)
-        logger.info(f"Audio ready for {phone}: {audio_reply_path}")
-        import httpx
-        with httpx.Client(timeout=60.0) as client:
-            resp = client.post(
-                f"{settings.WHATSAPP_BOT_URL}/send/audio",
-                json={"phone": phone, "audio_path": audio_reply_path},
-            )
-            resp.raise_for_status()
-            logger.info(f"Audio sent to {phone}")
-    except Exception as e:
-        logger.error(f"Failed to send audio to {phone}: {e}")
-
-
 def _sync_calendar_background(appointment):
     """Run Google Calendar sync in a thread."""
     try:
@@ -498,19 +474,23 @@ async def handle_message(payload: WebhookMessage):
 
         reply_text = clean_patient_reply(reply_text, language)
 
+        audio_reply_path = None
         if incoming_audio:
             tts_text = audio_script if audio_script and language == "hinglish" else reply_text
-            logger.info(f"Patient sent audio, will generate voice reply for {phone}")
-            asyncio.get_event_loop().run_in_executor(
-                None,
-                _send_audio_async,
-                phone,
-                tts_text,
-                language,
-            )
+            logger.info(f"Patient sent audio, generating voice reply for {phone} (provider={settings.TTS_PROVIDER})")
+            try:
+                audio_reply_path = await generate_voice_reply(tts_text, language=language)
+                if audio_reply_path:
+                    audio_reply_path = os.path.abspath(audio_reply_path)
+                    logger.info(f"Voice reply generated: {audio_reply_path}")
+                else:
+                    logger.warning(f"Voice reply returned None for {phone}")
+            except Exception as e:
+                logger.error(f"Voice reply failed for {phone}: {e}")
+                audio_reply_path = None
 
-        logger.info(f"Final reply for {phone}: text_reply='{reply_text[:50]}' (audio={'yes' if incoming_audio else 'no'})")
-        return {"text_reply": reply_text, "audio_path": None}
+        logger.info(f"Final reply for {phone}: text_reply='{reply_text[:50]}', audio_path='{audio_reply_path}'")
+        return {"text_reply": reply_text, "audio_path": audio_reply_path}
 
 
 @app.post("/webhook/staff-message")

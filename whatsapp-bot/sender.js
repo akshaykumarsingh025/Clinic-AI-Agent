@@ -1,12 +1,11 @@
-const fs = require('fs');
-const path = require('path');
-const { execFile } = require('child_process');
-const { promisify } = require('util');
+import fs from 'fs';
+import path from 'path';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 const execFileAsync = promisify(execFile);
 
 function toJid(phone) {
     if (phone.includes('@')) return phone;
-    if (phone.length > 15 && !phone.startsWith('+')) return `${phone}@lid`;
     return `${phone}@s.whatsapp.net`;
 }
 
@@ -17,10 +16,9 @@ async function sendText(sock, phone, text) {
 async function convertToOggOpus(inputPath) {
     const outputPath = inputPath.replace(/\.[^.]+$/, '') + '_wa.ogg';
 
-    // Find ffmpeg: prefer ffmpeg-static, fall back to system ffmpeg
     let ffmpegPath;
     try {
-        ffmpegPath = require('ffmpeg-static');
+        ffmpegPath = (await import('ffmpeg-static')).default;
     } catch (e) {
         ffmpegPath = 'ffmpeg';
     }
@@ -57,8 +55,6 @@ async function sendAudio(sock, phone, audioPath) {
     let sendPath = audioPath;
     const ext = path.extname(audioPath).toLowerCase();
 
-    // WhatsApp voice notes (PTT) require OGG Opus format.
-    // Convert WAV/MP3/other formats to OGG Opus before sending.
     if (ext !== '.ogg' && ext !== '.opus') {
         console.log(`[sender] Converting ${ext} to OGG Opus for WhatsApp voice note...`);
         const oggPath = await convertToOggOpus(audioPath);
@@ -67,7 +63,6 @@ async function sendAudio(sock, phone, audioPath) {
             console.log(`[sender] Converted to OGG: ${oggPath}`);
         } else {
             console.warn(`[sender] OGG conversion failed, sending as regular audio (not PTT)`);
-            // Fallback: send as regular audio file, not voice note
             const audioBuffer = fs.readFileSync(audioPath);
             const mimeMap = { '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4' };
             await sock.sendMessage(toJid(phone), {
@@ -87,7 +82,6 @@ async function sendAudio(sock, phone, audioPath) {
         ptt: true,
     });
 
-    // Clean up converted file (not the original cached file)
     if (sendPath !== audioPath) {
         try { fs.unlinkSync(sendPath); } catch (e) {}
     }
@@ -109,4 +103,4 @@ async function sendButtons(sock, phone, text, buttons) {
     await sock.sendMessage(toJid(phone), buttonMessage);
 }
 
-module.exports = { sendText, sendAudio, sendButtons };
+export { sendText, sendAudio, sendButtons };

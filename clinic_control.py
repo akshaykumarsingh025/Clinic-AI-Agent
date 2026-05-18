@@ -107,6 +107,68 @@ def save_env(values: dict[str, str]):
     ENV_PATH.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
 
+class PairingCodeDialog(Tk):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("Link WhatsApp with Pairing Code")
+        self.geometry("480x320")
+        self.resizable(False, False)
+        self.grab_set()
+
+        self.parent_app = parent
+
+        frame = ttk.Frame(self, padding=20)
+        frame.pack(fill="both", expand=True)
+
+        ttk.Label(frame, text="WhatsApp Phone Number (with country code):", font=("Segoe UI", 10)).grid(row=0, column=0, sticky="w", pady=(0, 4))
+        self.phone_var = StringVar()
+        phone_entry = ttk.Entry(frame, textvariable=self.phone_var, width=25, font=("Segoe UI", 11))
+        phone_entry.grid(row=1, column=0, sticky="w", pady=(0, 8))
+        phone_entry.insert(0, "919871208803")
+
+        ttk.Label(frame, text="Example: 919871208803 (no + sign)", font=("Segoe UI", 9)).grid(row=2, column=0, sticky="w", pady=(0, 12))
+
+        ttk.Button(frame, text="Request Pairing Code", command=self._request_code).grid(row=3, column=0, sticky="w", pady=(0, 12))
+
+        self.code_var = StringVar(value="")
+        ttk.Label(frame, text="Your Pairing Code:", font=("Segoe UI", 10)).grid(row=4, column=0, sticky="w", pady=(0, 4))
+        self.code_label = ttk.Label(frame, textvariable=self.code_var, font=("Consolas", 22, "bold"), foreground="#25D366")
+        self.code_label.grid(row=5, column=0, sticky="w", pady=(0, 8))
+
+        ttk.Label(frame, text="Open WhatsApp > Linked Devices > Link with phone number", font=("Segoe UI", 9)).grid(row=6, column=0, sticky="w")
+
+    def _request_code(self):
+        phone = self.phone_var.get().strip().replace("+", "").replace(" ", "")
+        if len(phone) < 10:
+            messagebox.showwarning("Invalid Number", "Enter a valid phone number with country code (e.g. 919871208803)")
+            return
+
+        self.code_var.set("Requesting...")
+        self.update()
+
+        bot_url = self.parent_app.env_values.get("WHATSAPP_BOT_URL", "http://localhost:3001").rstrip("/")
+
+        def worker():
+            try:
+                data = json.dumps({"phone": phone}).encode()
+                req = Request(f"{bot_url}/pairing-code", data=data, headers={"Content-Type": "application/json"}, method="POST")
+                with urlopen(req, timeout=20) as resp:
+                    result = json.loads(resp.read().decode())
+                if result.get("success") and result.get("pairing_code"):
+                    code = result["pairing_code"]
+                    self.after(0, lambda: self.code_var.set(f"{code[:4]}-{code[4:]}"))
+                    self.parent_app._log(f"Pairing code generated for {phone}: {code[:4]}-{code[4:]}")
+                else:
+                    err = result.get("error", "Unknown error")
+                    self.after(0, lambda: self.code_var.set(f"Failed: {err}"))
+                    self.parent_app._log(f"Pairing code failed: {err}")
+            except Exception as exc:
+                self.after(0, lambda: self.code_var.set(f"Error: {exc}"))
+                self.parent_app._log(f"Pairing code request failed: {exc}")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+
 class ClinicControlApp(Tk):
     def __init__(self):
         super().__init__()
@@ -167,7 +229,8 @@ class ClinicControlApp(Tk):
             text="Use New WhatsApp Number",
             command=self.reset_whatsapp_login,
         ).grid(row=1, column=0, columnspan=2, padx=6, pady=8, sticky="ew")
-        ttk.Button(controls, text="Refresh Status", command=self.refresh_status).grid(row=1, column=2, padx=6, pady=8)
+        ttk.Button(controls, text="Link with Pairing Code", command=self.pairing_code_login).grid(row=1, column=2, padx=6, pady=8)
+        ttk.Button(controls, text="Refresh Status", command=self.refresh_status).grid(row=1, column=3, padx=6, pady=8)
 
         self.backend_status = StringVar(value="Backend: stopped")
         self.bot_status = StringVar(value="WhatsApp: stopped")
@@ -176,7 +239,7 @@ class ClinicControlApp(Tk):
 
         hint = ttk.Label(
             self.services_tab,
-            text="To scan a new number: stop the bot, click 'Use New WhatsApp Number', then scan the QR shown in the log below.",
+            text="Link WhatsApp: scan QR (auto-shown in log) OR use 'Link with Pairing Code' if QR is blocked.",
         )
         hint.pack(anchor="w", padx=14, pady=(0, 6))
 
@@ -539,6 +602,10 @@ class ClinicControlApp(Tk):
         else:
             self._log("No existing WhatsApp login folder found.")
         self.start_bot()
+
+    def pairing_code_login(self):
+        dialog = PairingCodeDialog(self)
+        self.wait_window(dialog)
 
     def refresh_status(self):
         def worker():

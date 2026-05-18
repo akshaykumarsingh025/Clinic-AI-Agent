@@ -1,6 +1,10 @@
-const fs = require('fs');
-const path = require('path');
-const { downloadMediaMessage } = require('@whiskeysockets/baileys');
+import fs from 'fs';
+import path from 'path';
+import { downloadMediaMessage } from '@whiskeysockets/baileys';
+
+import { fileURLToPath } from 'url';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const DOWNLOAD_DIR = path.join(__dirname, '..', 'audio_cache', 'incoming');
 
@@ -57,4 +61,4 @@ async function downloadMedia(sock, msg) {
     return filepath;
 }
 
-module.exports = { downloadMedia };
+export { downloadMedia };
