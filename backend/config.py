@@ -32,13 +32,8 @@ class Settings:
         self.PIPER_VOICE: str = os.getenv("PIPER_VOICE", "./voices/en_IN-female-medium.onnx")
         self.AUDIO_CACHE_DIR: str = os.getenv("AUDIO_CACHE_DIR", "./audio_cache")
         self.SEND_AUDIO_REPLIES_FOR_TEXT: bool = os.getenv("SEND_AUDIO_REPLIES_FOR_TEXT", "true").lower() in ("1", "true", "yes", "on")
-        self.TTS_PROVIDER: str = os.getenv("TTS_PROVIDER", "auto")  # auto|piper|voiceclone|qwen3|chatterbox
+        self.TTS_PROVIDER: str = os.getenv("TTS_PROVIDER", "auto")  # auto|piper|qwen3|chatterbox
         self.QWEN3_TTS_MODEL: str = os.getenv("QWEN3_TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-1.7B-Base")
-        self.VOICECLONE_PROJECT_DIR: str = os.getenv("VOICECLONE_PROJECT_DIR", r"D:\Software\Projects\VoiceCloneReels")
-        self.VOICECLONE_PYTHON: str = os.getenv("VOICECLONE_PYTHON", "")
-        self.VOICECLONE_VOICE_SAMPLE: str = os.getenv("VOICECLONE_VOICE_SAMPLE", "")
-        self.VOICECLONE_LANGUAGE: str = os.getenv("VOICECLONE_LANGUAGE", "auto")
-        self.VOICECLONE_REF_TEXT: str = os.getenv("VOICECLONE_REF_TEXT", "")
 
         self.WHATSAPP_BOT_URL: str = os.getenv("WHATSAPP_BOT_URL", "http://localhost:3001")
         self.FASTAPI_HOST: str = os.getenv("FASTAPI_HOST", "0.0.0.0")

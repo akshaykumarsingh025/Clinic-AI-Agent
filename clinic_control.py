@@ -38,11 +38,6 @@ FIELD_ORDER = [
     "SEND_AUDIO_REPLIES_FOR_TEXT",
     "PIPER_BINARY",
     "PIPER_VOICE",
-    "VOICECLONE_PROJECT_DIR",
-    "VOICECLONE_PYTHON",
-    "VOICECLONE_VOICE_SAMPLE",
-    "VOICECLONE_LANGUAGE",
-    "VOICECLONE_REF_TEXT",
     "EXPORT_DIR",
     "GOOGLE_SHEET_ID",
     "GOOGLE_SHEET_GID",
@@ -68,11 +63,6 @@ DEFAULTS = {
     "SEND_AUDIO_REPLIES_FOR_TEXT": "true",
     "PIPER_BINARY": "piper",
     "PIPER_VOICE": "./voices/en_IN-female-medium.onnx",
-    "VOICECLONE_PROJECT_DIR": "D:/Software/Projects/VoiceCloneReels",
-    "VOICECLONE_PYTHON": "",
-    "VOICECLONE_VOICE_SAMPLE": "",
-    "VOICECLONE_LANGUAGE": "auto",
-    "VOICECLONE_REF_TEXT": "",
     "EXPORT_DIR": "./exports",
     "GOOGLE_SHEET_ID": "",
     "GOOGLE_SHEET_GID": "759128510",
@@ -247,7 +237,7 @@ class ClinicControlApp(Tk):
         ttk.Label(voice, text="TTS provider").grid(row=0, column=0, sticky="w", padx=6, pady=5)
         provider = StringVar(value=self.env_values.get("TTS_PROVIDER", "piper"))
         self.vars["TTS_PROVIDER"] = provider
-        ttk.Combobox(voice, textvariable=provider, values=["auto", "chatterbox", "qwen3", "voiceclone", "piper"], state="readonly", width=25).grid(row=0, column=1, sticky="w", padx=6, pady=5)
+        ttk.Combobox(voice, textvariable=provider, values=["auto", "chatterbox", "qwen3", "piper"], state="readonly", width=25).grid(row=0, column=1, sticky="w", padx=6, pady=5)
 
         audio_text = BooleanVar(value=self.env_values.get("SEND_AUDIO_REPLIES_FOR_TEXT", "false").lower() in ("1", "true", "yes", "on"))
         self.vars["SEND_AUDIO_REPLIES_FOR_TEXT"] = audio_text
@@ -255,16 +245,6 @@ class ClinicControlApp(Tk):
 
         self._setting_row(voice, 2, "PIPER_BINARY", "Piper binary")
         self._setting_row(voice, 3, "PIPER_VOICE", "Piper voice model", browse="file")
-        self._setting_row(voice, 4, "VOICECLONE_PROJECT_DIR", "VoiceCloneReels folder", browse="dir")
-        self._setting_row(voice, 5, "VOICECLONE_PYTHON", "VoiceClone Python", browse="file")
-        self._setting_row(voice, 6, "VOICECLONE_VOICE_SAMPLE", "Assistant voice sample", browse="file")
-
-        ttk.Label(voice, text="VoiceClone language").grid(row=7, column=0, sticky="w", padx=6, pady=5)
-        voice_lang = StringVar(value=self.env_values.get("VOICECLONE_LANGUAGE", "auto"))
-        self.vars["VOICECLONE_LANGUAGE"] = voice_lang
-        ttk.Combobox(voice, textvariable=voice_lang, values=["auto", "English", "Hindi"], state="readonly", width=20).grid(row=7, column=1, sticky="w", padx=6, pady=5)
-
-        self._setting_row(voice, 8, "VOICECLONE_REF_TEXT", "Reference transcript")
 
         sheets = ttk.LabelFrame(outer, text="Excel and Google Sheets")
         sheets.grid(row=3, column=0, sticky="ew", pady=8)

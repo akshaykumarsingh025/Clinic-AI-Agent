@@ -1,13 +1,15 @@
 import hashlib
-import json
 import logging
 import os
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 from typing import Optional
+
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 import torch
 
@@ -34,32 +36,6 @@ _chatterbox_conds_cache = {}
 
 def _ensure_cache_dir():
     os.makedirs(settings.AUDIO_CACHE_DIR, exist_ok=True)
-
-
-def _voiceclone_python(project_dir: Path) -> str:
-    if settings.VOICECLONE_PYTHON:
-        return settings.VOICECLONE_PYTHON
-    venv_python = project_dir / "venv" / "Scripts" / "python.exe"
-    if venv_python.exists():
-        return str(venv_python)
-    return sys.executable
-
-
-def _voiceclone_language(text: str, language: Optional[str]) -> str:
-    configured = (settings.VOICECLONE_LANGUAGE or "auto").lower()
-    if configured in ("hindi", "english"):
-        return configured.title()
-    if language == "hindi" or any("\u0900" <= ch <= "\u097F" for ch in text):
-        return "Hindi"
-    return "English"
-
-
-def _voiceclone_voice_sample(project_dir: Path, language: str) -> str:
-    if settings.VOICECLONE_VOICE_SAMPLE:
-        return settings.VOICECLONE_VOICE_SAMPLE
-    if language == "Hindi":
-        return str(project_dir / "Voices" / "deepikaHindiVoice.wav")
-    return str(project_dir / "Voices" / "deepikaVoice.mp3")
 
 
 def _detect_tts_language(text: str, language: Optional[str]) -> str:
@@ -96,7 +72,7 @@ def _detect_tts_language(text: str, language: Optional[str]) -> str:
 
 
 def _find_voice_sample(tts_language: str) -> Optional[str]:
-    voice_dir = Path("voices") / tts_language.lower()
+    voice_dir = Path(_PROJECT_ROOT) / "voices" / tts_language.lower()
     if not voice_dir.exists():
         return None
     audio_extensions = {".wav", ".mp3", ".ogg", ".flac", ".m4a"}
@@ -250,7 +226,7 @@ def _get_chatterbox_model():
     logger.info("Loading Chatterbox TTS model...")
     t0 = time.time()
     try:
-        from chatterbox.mtl_tts import ChatterboxMultilingualTTS
+        from chatterbox_patched.mtl_tts import ChatterboxMultilingualTTS
 
         _free_gpu_for("chatterbox")
 
@@ -270,19 +246,15 @@ def _get_chatterbox_model():
 def _warmup_qwen3():
     try:
         model = _get_qwen3_model()
-        ref_audio = _find_voice_sample("english") or settings.VOICECLONE_VOICE_SAMPLE or ""
+        ref_audio = _find_voice_sample("english")
         if ref_audio and os.path.exists(ref_audio):
             logger.info("Qwen3 warmup: generating sample audio...")
-            kwargs = {
-                "text": "Hello",
-                "language": "English",
-                "ref_audio": str(ref_audio),
-            }
-            if not settings.VOICECLONE_REF_TEXT:
-                kwargs["x_vector_only_mode"] = True
-            else:
-                kwargs["ref_text"] = settings.VOICECLONE_REF_TEXT
-            wavs, sr = model.generate_voice_clone(**kwargs)
+            wavs, sr = model.generate_voice_clone(
+                text="Hello",
+                language="English",
+                ref_audio=str(ref_audio),
+                x_vector_only_mode=True,
+            )
             logger.info(f"Qwen3 warmup complete (sr={sr})")
         else:
             logger.info("Qwen3 warmup: model loaded (no ref audio for full warmup)")
@@ -294,7 +266,7 @@ def _warmup_qwen3():
 def _warmup_chatterbox():
     try:
         model = _get_chatterbox_model()
-        ref_audio = _find_voice_sample("hindi") or settings.VOICECLONE_VOICE_SAMPLE or ""
+        ref_audio = _find_voice_sample("hindi")
         if ref_audio and os.path.exists(ref_audio):
             logger.info("Chatterbox warmup: generating sample audio...")
             _chatterbox_prepare_conditionals_cached(ref_audio, exaggeration=0.5)
@@ -337,18 +309,16 @@ def _generate_with_qwen3(text: str, output_path: str, language: Optional[str]) -
         model = _get_qwen3_model()
         tts_lang = _detect_tts_language(text, language)
 
-        ref_audio = _find_voice_sample("english") or settings.VOICECLONE_VOICE_SAMPLE or ""
-        ref_text = settings.VOICECLONE_REF_TEXT or ""
+        ref_audio = _find_voice_sample("english")
 
         logger.info(f"Qwen3-TTS generating: lang={tts_lang}, text={text[:60]}...")
 
         kwargs = {
             "text": text,
             "language": tts_lang,
-            "ref_audio": str(ref_audio) if ref_audio else None,
-            "ref_text": ref_text if ref_text else None,
         }
-        if ref_audio and not ref_text:
+        if ref_audio:
+            kwargs["ref_audio"] = str(ref_audio)
             kwargs["x_vector_only_mode"] = True
 
         with torch.inference_mode():
@@ -387,9 +357,9 @@ def _generate_with_chatterbox(text: str, output_path: str, language: Optional[st
         model = _get_chatterbox_model()
         tts_lang = _detect_tts_language(text, language)
 
-        ref_audio = _find_voice_sample("hindi") or settings.VOICECLONE_VOICE_SAMPLE or ""
+        ref_audio = _find_voice_sample("hindi")
         if not ref_audio or not os.path.exists(ref_audio):
-            logger.warning("No reference audio for Chatterbox voice cloning. Put a .wav file in voices/hindi/")
+            logger.warning("No reference audio for Chatterbox. Put a .wav file in voices/hindi/")
             return None
 
         language_code_map = {"Hindi": "hi", "English": "en"}
@@ -456,57 +426,6 @@ def _generate_with_chatterbox(text: str, output_path: str, language: Optional[st
     return None
 
 
-def _generate_with_voiceclone(text: str, output_path: str, language: Optional[str]) -> Optional[str]:
-    project_dir = Path(settings.VOICECLONE_PROJECT_DIR)
-    if not project_dir.exists():
-        return None
-
-    voice_language = _voiceclone_language(text, language)
-    voice_sample = _voiceclone_voice_sample(project_dir, voice_language)
-    if not os.path.exists(voice_sample):
-        return None
-
-    request = {
-        "text": text,
-        "language": voice_language,
-        "ref_audio_path": voice_sample,
-        "ref_text": settings.VOICECLONE_REF_TEXT,
-        "output_path": output_path,
-        "project_dir": str(project_dir),
-    }
-
-    bridge_path = Path(__file__).with_name("voiceclone_bridge.py")
-    python_exe = _voiceclone_python(project_dir)
-
-    fd, request_path = tempfile.mkstemp(prefix="voiceclone_request_", suffix=".json", dir=settings.AUDIO_CACHE_DIR)
-    os.close(fd)
-    try:
-        with open(request_path, "w", encoding="utf-8") as f:
-            json.dump(request, f, ensure_ascii=False)
-
-        env = os.environ.copy()
-        env["PYTHONIOENCODING"] = "utf-8"
-        result = subprocess.run(
-            [python_exe, str(bridge_path), request_path],
-            cwd=str(project_dir),
-            capture_output=True,
-            text=True,
-            timeout=600,
-            env=env,
-        )
-        if result.returncode == 0 and os.path.exists(output_path):
-            return output_path
-    except (subprocess.SubprocessError, OSError):
-        return None
-    finally:
-        try:
-            os.remove(request_path)
-        except OSError:
-            pass
-
-    return None
-
-
 def _generate_with_piper(text: str, output_path: str) -> Optional[str]:
     if not os.path.exists(settings.PIPER_VOICE):
         return None
@@ -535,7 +454,7 @@ async def generate_voice_reply(text: str, language: Optional[str] = None) -> Opt
     _ensure_cache_dir()
 
     provider = (settings.TTS_PROVIDER or "piper").lower()
-    cache_basis = f"{provider}|{settings.PIPER_VOICE}|{settings.VOICECLONE_VOICE_SAMPLE}|{language}|{text}"
+    cache_basis = f"{provider}|{settings.PIPER_VOICE}|{language}|{text}"
     cache_key = hashlib.md5(cache_basis.encode("utf-8")).hexdigest()
     output_path = os.path.join(settings.AUDIO_CACHE_DIR, f"{cache_key}.wav")
 
@@ -562,8 +481,6 @@ async def generate_voice_reply(text: str, language: Optional[str] = None) -> Opt
         if result is None:
             logger.warning("Qwen3 failed, falling back to Chatterbox...")
             result = await asyncio.to_thread(_generate_with_chatterbox, text, output_path, language)
-    elif provider == "voiceclone":
-        result = await asyncio.to_thread(_generate_with_voiceclone, text, output_path, language)
     elif provider == "piper":
         result = await asyncio.to_thread(_generate_with_piper, text, output_path)
 
