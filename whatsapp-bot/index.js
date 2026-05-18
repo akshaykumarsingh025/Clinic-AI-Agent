@@ -238,9 +238,13 @@ async function connectWhatsApp() {
 
                 if (loggedOut) {
                     console.log('Logged out. Use Pairing Code or delete auth_info and restart to scan QR again.');
-                } else if (badSession || restartRequired) {
-                    console.log(`Session error (${statusCode}). Resetting auth and reconnecting...`);
-                    deleteAuthAndReconnect(`Session error: ${statusCode}`);
+                } else if (badSession) {
+                    console.log('Bad session (500). Resetting auth and reconnecting...');
+                    deleteAuthAndReconnect(`Bad session: ${statusCode}`);
+                } else if (restartRequired) {
+                    console.log('Restart required (515). Reconnecting without deleting auth...');
+                    isReconnecting = false;
+                    setTimeout(() => connectWhatsApp(), 3000);
                 } else {
                     console.log('Reconnecting in 5 seconds...');
                     isReconnecting = false;

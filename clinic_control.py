@@ -107,7 +107,7 @@ def save_env(values: dict[str, str]):
     ENV_PATH.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
 
-class PairingCodeDialog(Tk):
+class PairingCodeDialog(Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
         self.title("Link WhatsApp with Pairing Code")
